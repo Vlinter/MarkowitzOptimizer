@@ -1,8 +1,7 @@
 # =========================================================
-# MARKOWITZ PORTFOLIO OPTIMIZER — Version allégée (bornes robustes + onglet Données)
-# Defaults: Ledoit–Wolf + moyenne simple, RF=0
-# Frontière τ, MC borné, Corrélations + Baskets, Backtest cohérent
-# Onglet "Données" : affichage du tableau + exclusion/réintégration d'actifs (persistant)
+# MARKOWITZ PORTFOLIO OPTIMIZER — fréquence auto + override manuel
+# Ledoit–Wolf (si dispo), optimisation bornée, corrélations, backtest
+# Onglet Données : exclusion/réintégration persistante (session)
 # =========================================================
 import warnings
 warnings.filterwarnings(
@@ -29,6 +28,11 @@ except Exception:
 
 st.set_page_config(page_title="Portfolio Optimizer", layout="wide")
 
+# ---- helper rerun (compat old/new streamlit) ----
+def _safe_rerun():
+    if hasattr(st, "rerun"): st.rerun()
+    elif hasattr(st, "experimental_rerun"): st.experimental_rerun()
+
 # ============================ Sidebar ============================
 st.sidebar.header("Paramètres")
 uploaded_file = st.sidebar.file_uploader("Fichier Excel (.xlsx/.xls)", type=["xlsx", "xls"])
@@ -49,15 +53,17 @@ seed  = st.sidebar.number_input("Graine aléatoire (Monte Carlo)", value=42, ste
 
 # ============================ Utilitaires ============================
 def infer_frequency(index: pd.DatetimeIndex) -> str:
+    """Heuristique robuste: daily/weekly/monthly/quarterly/yearly via médiane des écarts."""
     idx = index.sort_values().unique()
     if len(idx) < 3:
         return "monthly"
     deltas = np.diff(idx.values).astype("timedelta64[D]").astype(int)
     med = np.median(deltas)
-    if med <= 2:   return "daily"
-    if med <= 10:  return "weekly"
-    if med <= 40:  return "monthly"
-    if med <= 120: return "quarterly"
+    # seuils typiques: daily≈1, weekly≈7, monthly≈22~31, quarterly≈90, yearly≈365
+    if med <= 2:    return "daily"
+    if med <= 10:   return "weekly"
+    if med <= 40:   return "monthly"
+    if med <= 120:  return "quarterly"
     return "yearly"
 
 def ann_factor(freq: str) -> int:
@@ -108,8 +114,7 @@ def feasible_start(n: int, min_w: float, max_w: float) -> np.ndarray:
     cap = np.maximum(0.0, max_w - w)
     while R > 1e-12:
         idx = np.where(cap > 1e-12)[0]
-        if idx.size == 0:
-            break
+        if idx.size == 0: break
         inc = R / idx.size
         add = np.minimum(cap[idx], inc)
         w[idx] += add
@@ -129,7 +134,6 @@ def _solve_slsqp(objective, n, bounds, cons, w0=None, maxiter=2000):
                    options={'maxiter': maxiter, 'ftol': 1e-10, 'disp': False})
     if res.success:
         return res.x
-    # re-try avec autre w0 et tolérance plus souple
     w0b = np.ones(n)/n
     res2 = minimize(objective, w0b, method='SLSQP', bounds=bounds, constraints=cons,
                     options={'maxiter': maxiter*2, 'ftol': 1e-9, 'disp': False})
@@ -144,7 +148,7 @@ def max_sharpe_weights(mu, cov, min_w, max_w):
     w0     = feasible_start(n, min_w, max_w)
     def obj(w):
         ret, vol = portfolio_perf(w, mu, cov)
-        return 1e6 if vol <= 1e-12 else - (ret - RF) / vol  # RF=0
+        return 1e6 if vol <= 1e-12 else - (ret) / vol  # RF=0
     return _solve_slsqp(obj, n, bounds, cons, w0=w0)
 
 def min_var_weights(mu, cov, min_w, max_w):
@@ -161,7 +165,6 @@ def max_return_weights(mu, cov, min_w, max_w):
     w0     = feasible_start(n, min_w, max_w)
     return _solve_slsqp(lambda w: - float(w @ mu), n, bounds, cons, w0=w0)
 
-# ---- Frontière par compromis risque/rendement (τ) ----
 def frontier_by_tradeoff(mu, cov, min_w, max_w, npts=120, tau_max=None):
     n = len(mu)
     bounds = [(min_w, max_w)] * n
@@ -191,10 +194,9 @@ def frontier_by_tradeoff(mu, cov, min_w, max_w, npts=120, tau_max=None):
 
 def risk_contrib(w: np.ndarray, cov: np.ndarray) -> np.ndarray:
     tot_var = float(w @ cov @ w)
-    if tot_var <= 0:
-        return np.zeros_like(w)
+    if tot_var <= 0: return np.zeros_like(w)
     mrc = cov @ w
-    return (w * mrc) / tot_var  # somme = 1
+    return (w * mrc) / tot_var
 
 def cluster_order_from_corr(corr: pd.DataFrame) -> list:
     dist = (1 - corr).clip(lower=0) / 2.0
@@ -247,14 +249,12 @@ def top_corr_pairs(corr: pd.DataFrame, k: int = 3):
 
 # ---------- Backtest helpers ----------
 def wealth_buy_hold(returns: pd.DataFrame, w0: np.ndarray) -> pd.Series:
-    """Buy & Hold sans rebalancement, richesse totale (base 1.0)"""
     cum = (1 + returns).cumprod()
     wealth = (cum * w0).sum(axis=1)
     wealth.iloc[0] = 1.0
     return wealth
 
 def wealth_rebalanced_every_n(returns: pd.DataFrame, w_target: np.ndarray, n_reb: int = 1) -> pd.Series:
-    """Rebalancement tous les n_reb pas de temps (périodes des données)."""
     w_target = (w_target / w_target.sum()).astype(float)
     w_cur = w_target.copy()
     values = np.empty(len(returns), dtype=float)
@@ -266,10 +266,7 @@ def wealth_rebalanced_every_n(returns: pd.DataFrame, w_target: np.ndarray, n_reb
         values[t] = port_val
         gross = w_cur * (1 + r_vec)
         denom = gross.sum()
-        if denom > 0:
-            w_cur = gross / denom
-        else:
-            w_cur = w_target.copy()
+        w_cur = gross / denom if denom > 0 else w_target.copy()
         if ((t + 1) % max(1, int(n_reb))) == 0:
             w_cur = w_target.copy()
     wealth = pd.Series(values, index=returns.index)
@@ -323,11 +320,11 @@ def validate_weight_bounds(min_w: float, max_w: float, n: int, tol: float = 1e-1
         problems.append("MIN_W est supérieur à MAX_W.")
         hints.append("Assure-toi que MIN_W ≤ MAX_W.")
     if min_w * n > 1 + tol:
-        problems.append(f"La somme minimale imposée MIN_W×n = {min_w:.2%}×{n} = {min_w*n:.2%} dépasse 100%.")
-        hints.append(f"Baisse MIN_W ≤ {1/n:.2%} (ou diminue le nombre d’actifs contraints).")
+        problems.append(f"MIN_W×n = {min_w:.2%}×{n} = {min_w*n:.2%} > 100%.")
+        hints.append(f"Baisse MIN_W ≤ {1/n:.2%} ou réduis le nombre d’actifs contraints.")
     if max_w * n < 1 - tol:
-        problems.append(f"La somme maximale autorisée MAX_W×n = {max_w:.2%}×{n} = {max_w*n:.2%} est inférieure à 100%.")
-        hints.append(f"Augmente MAX_W ≥ {1/n:.2%} (ou retire des actifs).")
+        problems.append(f"MAX_W×n = {max_w:.2%}×{n} = {max_w*n:.2%} < 100%.")
+        hints.append(f"Augmente MAX_W ≥ {1/n:.2%} ou retire des actifs.")
     return problems, hints
 
 def warn_tight_bounds(min_w: float, max_w: float, n: int, tol: float = 1e-12):
@@ -335,14 +332,11 @@ def warn_tight_bounds(min_w: float, max_w: float, n: int, tol: float = 1e-12):
     slack_max = max_w * n - 1
     msgs = []
     if slack_min >= 0 and slack_min < 0.02 + tol:
-        msgs.append(f"MIN_W×n est très proche de 100% (marge {slack_min:.2%}).")
+        msgs.append(f"MIN_W×n proche de 100% (marge {slack_min:.2%}).")
     if slack_max >= 0 and slack_max < 0.02 + tol:
-        msgs.append(f"MAX_W×n est très proche de 100% (marge {slack_max:.2%}).")
+        msgs.append(f"MAX_W×n proche de 100% (marge {slack_max:.2%}).")
     if msgs:
-        st.warning(
-            "Bornes très serrées : " + " ".join(msgs) +
-            " Cela peut rendre l’optimisation instable ou pousser vers des solutions aux bornes."
-        )
+        st.warning("Bornes très serrées : " + " ".join(msgs))
 
 # ============================ Cache ============================
 @st.cache_data(show_spinner=False)
@@ -372,13 +366,11 @@ if prices_all.empty or len(all_tickers) < 2:
 
 # État persistant des actifs exclus
 if "excluded" not in st.session_state:
-    st.session_state["excluded"] = []  # liste des tickers exclus
+    st.session_state["excluded"] = []
 
-detected = infer_frequency(prices_all.index)
+# Période
 min_date = prices_all.index.min().date()
 max_date = prices_all.index.max().date()
-
-# Sélection période
 with st.expander("Périmètre temporel", expanded=True):
     c1, c2 = st.columns(2)
     with c1:
@@ -389,11 +381,9 @@ with st.expander("Périmètre temporel", expanded=True):
         st.error("La date de début doit être antérieure ou égale à la date de fin.")
         st.stop()
 
-# Appliquer filtre temporel, puis exclusions
+# Filtre dates + exclusions
 mask = (prices_all.index.date >= start_date) & (prices_all.index.date <= end_date)
 prices = prices_all.loc[mask].copy()
-
-# Appliquer exclusions persistantes
 excluded = [t for t in st.session_state["excluded"] if t in prices.columns]
 if excluded:
     prices = prices.drop(columns=excluded, errors="ignore")
@@ -406,22 +396,28 @@ if len(tickers) < 2:
     st.error("Il faut au moins deux actifs après exclusions. Réintègre des actifs dans l’onglet Données.")
     st.stop()
 
-freq = infer_frequency(prices.index); k = ann_factor(freq)
+# --------- Détection auto + override manuel de la fréquence ---------
+auto_freq = infer_frequency(prices.index)
+freq_options = ["daily", "weekly", "monthly", "quarterly", "yearly"]
+freq = st.selectbox(
+    "Fréquence des données (détection automatique modifiable)",
+    options=freq_options,
+    index=freq_options.index(auto_freq),
+    help="La fréquence détectée peut être corrigée ici si nécessaire."
+)
+k = ann_factor(freq)
 
-st.caption(f"Fréquence détectée : {freq} | Annualisation : ×{k}")
+st.caption(f"Fréquence sélectionnée : {freq} | Annualisation : ×{k}")
 st.caption(f"Période utilisée : {prices.index.min().date()} → {prices.index.max().date()} | Observations : {len(prices)}")
 if excluded:
     st.caption(f"Actifs exclus actuellement : {', '.join(excluded)}")
 
-# ---------- Validation des bornes AVANT toute optimisation ----------
+# Validation bornes
 n = len(tickers)
 problems, hints = validate_weight_bounds(min_w, max_w, n)
 if problems:
-    st.error(
-        "**Bornes de poids infaisables.**\n\n"
-        + "• " + "\n• ".join(problems) +
-        ("\n\n**Comment corriger :**\n" + "• " + "\n• ".join(hints) if hints else "")
-    )
+    st.error("**Bornes de poids infaisables.**\n\n" + "• " + "\n• ".join(problems) +
+             ("\n\n**Comment corriger :**\n" + "• " + "\n• ".join(hints) if hints else ""))
     st.stop()
 else:
     warn_tight_bounds(min_w, max_w, n)
@@ -437,13 +433,11 @@ with tab_data:
     st.markdown("---")
     st.subheader("Inclure / Exclure des actifs")
 
-    # Listes disponibles/exclus
     current_all = prices_all.columns.tolist()
     excluded_all = st.session_state["excluded"]
     available_all = [t for t in current_all if t not in excluded_all]
 
     colA, colB = st.columns(2)
-
     with colA:
         st.markdown("**Exclure des actifs**")
         to_exclude = st.multiselect("Sélectionne pour exclure", options=available_all, key="to_exclude_list")
@@ -451,8 +445,7 @@ with tab_data:
             new_excluded = sorted(list(set(excluded_all + to_exclude)))
             st.session_state["excluded"] = new_excluded
             st.success(f"Exclus : {', '.join(to_exclude)}")
-            st.rerun()
-
+            _safe_rerun()
     with colB:
         st.markdown("**Réintégrer des actifs**")
         to_include = st.multiselect("Sélectionne pour réintégrer", options=excluded_all, key="to_include_list")
@@ -460,22 +453,19 @@ with tab_data:
             new_excluded = [t for t in excluded_all if t not in to_include]
             st.session_state["excluded"] = new_excluded
             st.success(f"Réintégrés : {', '.join(to_include)}")
-            st.rerun()
+            _safe_rerun()
 
     st.caption(
-        f"Actifs disponibles totaux : {len(current_all)} | "
-        f"Actifs exclus : {len(st.session_state['excluded'])} | "
-        f"Actifs utilisés actuellement : {len(tickers)}"
+        f"Actifs totaux : {len(current_all)} | "
+        f"Exclus : {len(st.session_state['excluded'])} | "
+        f"Utilisés : {len(tickers)}"
     )
 
 # ============================ Onglet Optimisation ============================
 with tab_opt:
     returns = compute_returns(prices)
-
-    # mu = moyenne simple (annualisée)
     mu = returns.mean().values * k
 
-    # cov
     if cov_method == "Ledoit–Wolf":
         if HAS_LW:
             lw = LedoitWolf().fit(returns.values); cov = lw.covariance_ * k
@@ -485,12 +475,11 @@ with tab_opt:
     else:
         cov = returns.cov().values * k
 
-    # Robustesse num.
     cov = near_psd_clip(cov)
     cov = ridge_regularize(cov, ridge=1e-6)
 
     vol = np.sqrt(np.diag(cov))
-    shp = np.where(vol > 0, (mu - RF)/vol, np.nan)  # RF=0
+    shp = np.where(vol > 0, (mu)/vol, np.nan)  # RF=0
 
     st.subheader("Rendements, volatilités et Sharpe (annualisés)")
     df_metrics = pd.DataFrame({"Return_ann": mu, "Vol_ann": vol, "Sharpe_ann": shp}, index=tickers)
@@ -500,7 +489,7 @@ with tab_opt:
     df_metrics_fmt["Sharpe_ann"] = df_metrics_fmt["Sharpe_ann"].map(lambda v: f"{v:.2f}")
     st.dataframe(df_metrics_fmt, use_container_width=True)
 
-    # Portefeuilles optimaux (mêmes contraintes)
+    # Portefeuilles optimaux
     try:
         w_ms = max_sharpe_weights(mu, cov, min_w, max_w)
     except RuntimeError:
@@ -512,12 +501,11 @@ with tab_opt:
     try:
         w_mr = max_return_weights(mu, cov, min_w, max_w)
     except RuntimeError:
-        w_mr = feasible_start(n, min_w, max_w)
+        w_mr = feasible_start(len(tickers), min_w, max_w)
 
-    # Résultats
     def metrics_from_w(name, w):
         ret, vol_ = portfolio_perf(w, mu, cov)
-        sharpe = (ret - RF)/vol_
+        sharpe = (ret)/vol_
         return {"Portefeuille": name, "Return": ret, "Vol": vol_, "Sharpe": sharpe}
 
     df_res = pd.DataFrame([
@@ -534,7 +522,6 @@ with tab_opt:
     st.subheader("Résultats de l’optimisation")
     st.dataframe(df_res_fmt, use_container_width=True)
 
-    # Contributions au risque
     st.subheader("Contributions au risque (somme = 100%)")
     df_rc = pd.DataFrame({
         "Max Sharpe": risk_contrib(w_ms, cov),
@@ -568,7 +555,6 @@ with tab_fig:
     except RuntimeError:
         w_mr = feasible_start(n, min_w, max_w)
 
-    # Monte-Carlo borné + Frontière (τ)
     st.subheader("Nuage de portefeuilles, frontière efficiente (bornée) et portefeuilles optimaux")
     rng = np.random.default_rng(int(seed))
     W = sample_bounded_simplex(n=n, N=int(n_mc), min_w=min_w, max_w=max_w, rng=rng)
@@ -607,12 +593,11 @@ with tab_fig:
     fig.update_xaxes(tickformat=".0%"); fig.update_yaxes(tickformat=".0%")
     st.plotly_chart(fig, use_container_width=True)
 
-    # Camemberts (robustes)
+    # Camemberts
     def pie_series(weights: np.ndarray, labels: list, threshold: float = 0.02, eps: float = 1e-6) -> pd.Series:
         s = pd.Series(weights, index=labels)
         s = s[s > eps]
-        if s.empty:
-            return pd.Series([1.0], index=["N/A"])
+        if s.empty: return pd.Series([1.0], index=["N/A"])
         s = s.sort_values(ascending=False)
         if threshold and threshold > 0:
             majors = s[s >= threshold]
@@ -658,12 +643,11 @@ with tab_corr:
     with c2:
         months_win = st.number_input("Fenêtre (mois) pour la matrice/rolling", value=24, step=1, min_value=3, max_value=240)
     with c3:
-        freq_detected = infer_frequency(returns.index)
+        freq_used = freq  # utilise la fréquence choisie (auto ou manuelle)
 
-    win = months_to_periods(int(months_win), freq_detected)
-    st.caption(f"Fenêtre utilisée : {win} périodes ({months_win} mois, fréquence {freq_detected})")
+    win = months_to_periods(int(months_win), freq_used)
+    st.caption(f"Fenêtre utilisée : {win} périodes ({months_win} mois, fréquence {freq_used})")
 
-    # Matrice (fenêtre de fin)
     corr_data = returns.iloc[-win:] if len(returns) >= win else returns
     corr = corr_data.corr(method="spearman" if corr_type=="Spearman" else "pearson")
     ordered = cluster_order_from_corr(corr); corr_ord = corr.loc[ordered, ordered]
@@ -676,7 +660,6 @@ with tab_corr:
     heat.update_layout(template="plotly_white", height=600)
     st.plotly_chart(heat, use_container_width=True)
 
-    # Top 3 corrélations positives et négatives
     top_pos, top_neg = top_corr_pairs(corr, k=3)
     st.subheader("Top corrélations (fenêtre courante)")
     colp, coln = st.columns(2)
@@ -695,7 +678,6 @@ with tab_corr:
         else:
             st.write("Aucune paire.")
 
-    # Corrélation roulante entre 2 actifs au choix
     st.subheader("Corrélation roulante (deux actifs)")
     c1, c2 = st.columns(2)
     with c1:
@@ -719,14 +701,12 @@ with tab_corr:
     else:
         st.info("Sélectionnez deux actifs distincts.")
 
-    # Corrélation entre deux paniers (baskets)
     st.subheader("Corrélation de paniers (égal-pondérés)")
     c1, c2 = st.columns(2)
     with c1:
         basket_a = st.multiselect("Panier A — sélectionner des actifs", tickers, default=[])
     with c2:
         basket_b = st.multiselect("Panier B — sélectionner des actifs", tickers, default=[])
-
     if len(basket_a) >= 1 and len(basket_b) >= 1:
         Ra = returns[basket_a].mean(axis=1)
         Rb = returns[basket_b].mean(axis=1)
@@ -735,7 +715,6 @@ with tab_corr:
         else:
             corr_baskets = Ra.iloc[-win:].corr(Rb.iloc[-win:]) if len(Ra) >= win else Ra.corr(Rb)
         st.write(f"Corrélation panier A vs panier B (fenêtre courante) : {corr_baskets:.2f}")
-
         if len(returns) >= win:
             roll_corr_baskets = Ra.rolling(win).corr(Rb)
             figb = go.Figure()
@@ -746,7 +725,7 @@ with tab_corr:
             figb.update_yaxes(range=[-1, 1])
             st.plotly_chart(figb, use_container_width=True)
     else:
-        st.info("Choisissez au moins un actif dans chaque panier pour calculer la corrélation des paniers.")
+        st.info("Choisissez au moins un actif dans chaque panier.")
 
 # ============================ Onglet Backtest ============================
 with tab_bt:
@@ -755,11 +734,9 @@ with tab_bt:
     returns = compute_returns(prices)
     n = len(tickers)
 
-    # Source des poids (défaut: Max Sharpe)
     src = st.radio("Source des poids", ["Manuel", "Égal-pondéré", "Max Sharpe", "Min Variance", "Max Return"],
                    horizontal=True, index=2)
 
-    # mu/cov pour proposer des poids optimaux si besoin
     mu_bt = returns.mean().values * k
     if cov_method == "Ledoit–Wolf":
         if HAS_LW:
@@ -770,7 +747,6 @@ with tab_bt:
         cov_bt = returns.cov().values * k
     cov_bt = near_psd_clip(cov_bt); cov_bt = ridge_regularize(cov_bt, ridge=1e-6)
 
-    # Poids par défaut selon la source
     if src == "Égal-pondéré":
         w_init = np.ones(n) / n
     elif src == "Max Sharpe":
@@ -788,10 +764,10 @@ with tab_bt:
             w_init = max_return_weights(mu_bt, cov_bt, min_w, max_w)
         except RuntimeError:
             w_init = feasible_start(n, min_w, max_w)
-    else:  # Manuel
+    else:
         w_init = np.ones(n) / n
 
-    # --- Éditeur de poids en % (avec contrôle strict de la somme) ---
+    # Éditeur de poids avec contrôle de somme
     df_edit = pd.DataFrame({"Ticker": tickers, "Poids_%": (w_init * 100)})
     edited = st.data_editor(
         df_edit,
@@ -801,33 +777,22 @@ with tab_bt:
             "Poids_%": st.column_config.NumberColumn("Poids (%)", min_value=0.0, max_value=1000.0, step=0.1, format="%.2f")
         }
     )
-
-    # Récupération et contrôles
     w_user_pct = np.asarray(edited["Poids_%"].values, dtype=float)
     total_pct = float(np.nansum(w_user_pct))
 
     if not np.isfinite(total_pct):
-        st.error("La somme des poids est invalide (NaN/inf). Corrige les entrées.")
-        st.stop()
-
+        st.error("La somme des poids est invalide (NaN/inf). Corrige les entrées."); st.stop()
     if total_pct <= 0:
-        st.error("La somme des poids est nulle. Ajuste les valeurs pour dépasser 0%.")
-        st.stop()
-
+        st.error("La somme des poids est nulle. Ajuste les valeurs pour dépasser 0%."); st.stop()
     if total_pct > 100.0 + 1e-9:
         excess = total_pct - 100.0
-        st.error(f"La somme des poids ({total_pct:.2f}%) dépasse 100% de {excess:.2f}%. "
-                 "Réduis les poids pour ne pas dépasser 100%.")
-        st.stop()
-
+        st.error(f"La somme des poids ({total_pct:.2f}%) dépasse 100% de {excess:.2f}%. Réduis les poids."); st.stop()
     if total_pct < 100.0 - 1e-9:
         st.info(f"La somme des poids est {total_pct:.2f}%. Ils seront normalisés à 100% pour le backtest.")
 
-    # Passage en proportions (somme = 1)
     w_user = np.clip(w_user_pct, 0, None) / total_pct
     st.caption(f"Somme des poids saisie : {total_pct:.2f}% → utilisée après normalisation : 100.00%")
 
-    # Mode & fréquence de rebalancement (défaut: Rebalancement + Auto)
     mode = st.radio("Mode de backtest", ["Buy & Hold (sans rebalancement)", "Rebalancement"],
                     horizontal=True, index=1)
     if mode == "Rebalancement":
@@ -842,19 +807,13 @@ with tab_bt:
             n_custom = st.number_input("N périodes (si 'Tous les N périodes')", value=1, min_value=1, step=1,
                                        disabled=(reb_choice != "Tous les N périodes"))
         n_reb = n_for_rebalance_choice(reb_choice, freq, n_custom)
-        st.caption(f"Rebalancement tous les {n_reb} pas de temps (périodes des données).")
+        st.caption(f"Rebalancement tous les {n_reb} pas de temps.")
     else:
         n_reb = None
 
-    # Calcul des trajectoires
-    if mode.startswith("Buy"):
-        wealth = wealth_buy_hold(returns, w_user)
-    else:
-        wealth = wealth_rebalanced_every_n(returns, w_user, n_reb=n_reb)
-
+    wealth = wealth_buy_hold(returns, w_user) if mode.startswith("Buy") else wealth_rebalanced_every_n(returns, w_user, n_reb=n_reb)
     metrics, dd = perf_metrics(wealth, freq_k=k)
 
-    # Affichage métriques
     st.subheader("Métriques du backtest")
     mdf = pd.DataFrame({
         "Total Return": [f"{metrics['Total Return']*100:.2f}%"],
@@ -866,7 +825,6 @@ with tab_bt:
     })
     st.dataframe(mdf, use_container_width=True)
 
-    # Graphiques
     st.subheader("Courbes de backtest")
     col1, col2 = st.columns(2)
     with col1:
@@ -882,9 +840,4 @@ with tab_bt:
         figd.update_yaxes(tickformat=".0%")
         st.plotly_chart(figd, use_container_width=True)
 
-    st.caption(
-        "Notes : "
-        "1) 'Auto' = rebalancement à chaque période des données (quotidienne/hebdo/mensuelle...). "
-        "2) 'Tous les N périodes' applique un rebalancement toutes N lignes de données. "
-        "3) Les métriques sont calculées à la fréquence détectée puis annualisées (×k pour le rendement moyen, ×√k pour la volatilité)."
-    )
+    st.caption("‘Auto’ = même fréquence que les données (daily/weekly/monthly…). Les métriques sont annualisées avec la fréquence choisie.")
