@@ -610,7 +610,7 @@ tab_data, tab_opt, tab_fig, tab_corr, tab_bt = st.tabs(["Données", "Optimisatio
 # ============================ Onglet Données ============================
 with tab_data:
     st.subheader("Tableau de prix utilisé (après filtre de dates et exclusions)")
-    st.dataframe(prices, use_container_width=True)
+    st.dataframe(prices, width="stretch")
 
     st.markdown("---")
     st.subheader("Inclure / Exclure des actifs")
@@ -623,7 +623,7 @@ with tab_data:
     with colA:
         st.markdown("**Exclure des actifs**")
         to_exclude = st.multiselect("Sélectionne pour exclure", options=available_all, key="to_exclude_list")
-        if st.button("Exclure", type="primary", use_container_width=True, key="btn_exclure"):
+        if st.button("Exclure", type="primary", width="stretch", key="btn_exclure"):
             new_excluded = sorted(list(set(excluded_all + to_exclude)))
             st.session_state["excluded"] = new_excluded
             st.success(f"Exclus : {', '.join(to_exclude)}")
@@ -631,7 +631,7 @@ with tab_data:
     with colB:
         st.markdown("**Réintégrer des actifs**")
         to_include = st.multiselect("Sélectionne pour réintégrer", options=excluded_all, key="to_include_list")
-        if st.button("Réintégrer", use_container_width=True, key="btn_reintegrer"):
+        if st.button("Réintégrer", width="stretch", key="btn_reintegrer"):
             new_excluded = [t for t in excluded_all if t not in to_include]
             st.session_state["excluded"] = new_excluded
             st.success(f"Réintégrés : {', '.join(to_include)}")
@@ -669,7 +669,7 @@ with tab_opt:
     for c in ["Return_ann", "Vol_ann"]:
         df_metrics_fmt[c] = (df_metrics_fmt[c]*100).map(lambda v: f"{v:.2f}%")
     df_metrics_fmt["Sharpe_ann"] = df_metrics_fmt["Sharpe_ann"].map(lambda v: f"{v:.2f}")
-    st.dataframe(df_metrics_fmt, use_container_width=True)
+    st.dataframe(df_metrics_fmt, width="stretch")
 
     # Portefeuilles optimaux
     try:
@@ -702,7 +702,7 @@ with tab_opt:
     df_res_fmt["Sharpe"] = df_res_fmt["Sharpe"].map(lambda v: f"{v:.2f}")
 
     st.subheader("Résultats de l’optimisation")
-    st.dataframe(df_res_fmt, use_container_width=True)
+    st.dataframe(df_res_fmt, width="stretch")
 
     st.subheader("Contributions au risque (somme = 100%)")
     df_rc = pd.DataFrame({
@@ -710,7 +710,7 @@ with tab_opt:
         "Min Variance": risk_contrib(w_mv, cov),
         "Max Return": risk_contrib(w_mr, cov)
     }, index=tickers)
-    st.dataframe((df_rc*100).round(2).astype(str) + " %", use_container_width=True)
+    st.dataframe((df_rc*100).round(2).astype(str) + " %", width="stretch")
 
 # ============================ Onglet Graphiques ============================
 with tab_fig:
@@ -774,7 +774,7 @@ with tab_fig:
         hovermode="closest"
     )
     fig.update_xaxes(tickformat=".0%"); fig.update_yaxes(tickformat=".0%")
-    st.plotly_chart(fig, use_container_width=True, key="fig_frontier")
+    st.plotly_chart(fig, width="stretch", key="fig_frontier")
 
     # Camemberts
     def pie_series(weights: np.ndarray, labels: list, threshold: float = 0.02, eps: float = 1e-6) -> pd.Series:
@@ -810,11 +810,11 @@ with tab_fig:
     add_pie(pies, 1, 2, s_mv)
     add_pie(pies, 1, 3, s_mr)
     pies.update_layout(template="plotly_white")
-    st.plotly_chart(pies, use_container_width=True, key="fig_pies")
+    st.plotly_chart(pies, width="stretch", key="fig_pies")
 
     st.subheader("Poids par portefeuille (%)")
     weights_df = pd.DataFrame({"Max Sharpe": w_ms, "Min Variance": w_mv, "Max Return": w_mr}, index=tickers)
-    st.dataframe((weights_df * 100).round(2).astype(str) + " %", use_container_width=True)
+    st.dataframe((weights_df * 100).round(2).astype(str) + " %", width="stretch")
 
 # ============================ Onglet Corrélation ============================
 with tab_corr:
@@ -841,7 +841,7 @@ with tab_corr:
         colorscale="RdBu", zmin=-1, zmax=1, zmid=0, colorbar=dict(title="Corr")
     ))
     heat.update_layout(template="plotly_white", height=600)
-    st.plotly_chart(heat, use_container_width=True, key="fig_corr_heat")
+    st.plotly_chart(heat, width="stretch", key="fig_corr_heat")
 
     top_pos, top_neg = top_corr_pairs(corr, k=3)
     st.subheader("Top corrélations (fenêtre courante)")
@@ -880,7 +880,7 @@ with tab_corr:
         figc.add_hline(y=0, line_width=1, line_dash="dash", line_color="gray")
         figc.update_layout(template="plotly_white", yaxis_title="Corrélation roulante", xaxis_title="Date")
         figc.update_yaxes(range=[-1, 1])
-        st.plotly_chart(figc, use_container_width=True, key="fig_corr_roll")
+        st.plotly_chart(figc, width="stretch", key="fig_corr_roll")
     else:
         st.info("Sélectionnez deux actifs distincts.")
 
@@ -906,7 +906,7 @@ with tab_corr:
             figb.add_hline(y=0, line_width=1, line_dash="dash", line_color="gray")
             figb.update_layout(template="plotly_white", yaxis_title="Corrélation roulante paniers", xaxis_title="Date")
             figb.update_yaxes(range=[-1, 1])
-            st.plotly_chart(figb, use_container_width=True, key="fig_corr_baskets")
+            st.plotly_chart(figb, width="stretch", key="fig_corr_baskets")
     else:
         st.info("Choisissez au moins un actif dans chaque panier.")
 
@@ -955,7 +955,7 @@ with tab_bt:
     edited = st.data_editor(
         df_edit,
         num_rows="fixed",
-        use_container_width=True,
+        width="stretch",
         column_config={
             "Poids_%": st.column_config.NumberColumn("Poids (%)", min_value=0.0, max_value=1000.0, step=0.1, format="%.2f")
         }
@@ -1026,12 +1026,12 @@ with tab_bt:
         "Max Drawdown": [f"{metrics['Max Drawdown']*100:.2f}%"] if pd.notna(metrics["Max Drawdown"]) else ["N/A"],
         "Worst period": [f"{metrics['Worst period']*100:.2f}%"] if pd.notna(metrics["Worst period"]) else ["N/A"]
     })
-    st.dataframe(mdf, use_container_width=True)
+    st.dataframe(mdf, width="stretch")
 
     # ====== Risk & Return Metrics (style PV) ======
     st.subheader("Risk & Return Metrics")
     pv_df = pv_stats_from_returns(ret_native=ret, monthly_ret=monthly_ret, wealth=wealth, k_annual=k)
-    st.dataframe(pv_df, use_container_width=True)
+    st.dataframe(pv_df, width="stretch")
 
     # ====== Courbes principales (Wealth + Drawdown) ======
     st.subheader("Courbes de backtest")
@@ -1044,14 +1044,14 @@ with tab_bt:
         figw.update_layout(template="plotly_white", yaxis_title="Valeur du portefeuille", xaxis_title="Date")
         if log_scale:
             figw.update_yaxes(type="log")
-        st.plotly_chart(figw, use_container_width=True, key="fig_bt_wealth")
+        st.plotly_chart(figw, width="stretch", key="fig_bt_wealth")
     with col2:
         figd = go.Figure()
         figd.add_trace(go.Scatter(x=dd.index, y=dd.values, mode="lines", name="Drawdown"))
         figd.add_hline(y=0, line_width=1, line_dash="dash", line_color="gray")
         figd.update_layout(template="plotly_white", yaxis_title="Drawdown", xaxis_title="Date")
         figd.update_yaxes(tickformat=".0%")
-        st.plotly_chart(figd, use_container_width=True, key="fig_bt_dd")
+        st.plotly_chart(figd, width="stretch", key="fig_bt_dd")
 
     # ====== Analyses complémentaires (style Portfolio Visualizer) ======
     st.subheader("Analyses complémentaires")
@@ -1111,7 +1111,7 @@ with tab_bt:
         else:
             st.info("Séries d’actifs insuffisantes pour les rendements annuels par actif.")
 
-    st.plotly_chart(fig_annual_combo, use_container_width=True, key="fig_bt_annual_combo")
+    st.plotly_chart(fig_annual_combo, width="stretch", key="fig_bt_annual_combo")
 
 
     # 2) Histogramme des rendements (granularité native)
@@ -1123,7 +1123,7 @@ with tab_bt:
         fig_hist.update_layout(template="plotly_white", xaxis_title="Rendement par période",
                                yaxis_title="Fréquence", title="Distribution des rendements")
         fig_hist.update_xaxes(tickformat=".1%")
-    st.plotly_chart(fig_hist, use_container_width=True, key="fig_bt_hist")
+    st.plotly_chart(fig_hist, width="stretch", key="fig_bt_hist")
 
     # 3) Rolling CAGR / Vol / Sharpe
     colr1, colr2, colr3 = st.columns(3)
@@ -1146,21 +1146,21 @@ with tab_bt:
         fig_rcagr.update_layout(template="plotly_white", xaxis_title="Date", yaxis_title="CAGR (annualisé)",
                                 title=f"Rolling CAGR — fenêtre {roll_months} mois")
         fig_rcagr.update_yaxes(tickformat=".0%")
-        st.plotly_chart(fig_rcagr, use_container_width=True, key="fig_bt_roll_cagr")
+        st.plotly_chart(fig_rcagr, width="stretch", key="fig_bt_roll_cagr")
     with colr2:
         fig_rvol = go.Figure()
         fig_rvol.add_trace(go.Scatter(x=rolling_vol.index, y=rolling_vol.values, mode="lines", name="Rolling Vol"))
         fig_rvol.update_layout(template="plotly_white", xaxis_title="Date", yaxis_title="Vol (annualisée)",
                                title=f"Rolling Vol — fenêtre {roll_months} mois")
         fig_rvol.update_yaxes(tickformat=".0%")
-        st.plotly_chart(fig_rvol, use_container_width=True, key="fig_bt_roll_vol")
+        st.plotly_chart(fig_rvol, width="stretch", key="fig_bt_roll_vol")
     with colr3:
         fig_rsh = go.Figure()
         fig_rsh.add_trace(go.Scatter(x=rolling_sharpe.index, y=rolling_sharpe.values, mode="lines", name="Rolling Sharpe"))
         fig_rsh.add_hline(y=0, line_width=1, line_dash="dash", line_color="gray")
         fig_rsh.update_layout(template="plotly_white", xaxis_title="Date", yaxis_title="Sharpe",
                               title=f"Rolling Sharpe — fenêtre {roll_months} mois")
-        st.plotly_chart(fig_rsh, use_container_width=True, key="fig_bt_roll_sharpe")
+        st.plotly_chart(fig_rsh, width="stretch", key="fig_bt_roll_sharpe")
 
     # 4) Calendar heatmap (mensuel)
     st.subheader("Calendar Heatmap — rendements mensuels")
@@ -1186,7 +1186,7 @@ with tab_bt:
         ))
     
         heatmap.update_layout(template="plotly_white", xaxis_title="", yaxis_title="Année")
-        st.plotly_chart(heatmap, use_container_width=True, key="fig_bt_cal_heat")
+        st.plotly_chart(heatmap, width="stretch", key="fig_bt_cal_heat")
 
     
 
@@ -1198,7 +1198,7 @@ with tab_bt:
         if not dd_table.empty:
             fmt = dd_table.copy()
             fmt["Depth (%)"] = fmt["Depth (%)"].map(lambda x: f"{x:.2f}%")
-            st.dataframe(fmt, use_container_width=True)
+            st.dataframe(fmt, width="stretch")
         else:
             st.info("Pas de drawdown identifié.")
 
