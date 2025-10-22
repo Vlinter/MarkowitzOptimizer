@@ -1,7 +1,7 @@
 # =========================================================
 # MARKOWITZ PORTFOLIO OPTIMIZER — fréquence auto + override manuel
 # Ledoit–Wolf (si dispo), optimisation bornée, corrélations, backtest
-# Onglet Données : exclusion/réintégration persistante (session)
+# Frontière efficiente robuste (cible de rendement) + vues "Portfolio Visualizer"
 # =========================================================
 import warnings
 warnings.filterwarnings(
@@ -40,7 +40,7 @@ uploaded_file = st.sidebar.file_uploader("Fichier Excel (.xlsx/.xls)", type=["xl
 # RF toujours 0
 RF = 0.0
 
-# Méthodes d'estimation (defaults: Ledoit–Wolf + Moyenne simple)
+# Méthodes d’estimation (defaults: Ledoit–Wolf + Moyenne simple)
 cov_options = ["Échantillon", "Ledoit–Wolf"]
 cov_default_index = (1 if HAS_LW else 0)
 cov_method = st.sidebar.selectbox("Méthode de covariance", cov_options, index=cov_default_index)
@@ -53,13 +53,11 @@ seed  = st.sidebar.number_input("Graine aléatoire (Monte Carlo)", value=42, ste
 
 # ============================ Utilitaires ============================
 def infer_frequency(index: pd.DatetimeIndex) -> str:
-    """Heuristique robuste: daily/weekly/monthly/quarterly/yearly via médiane des écarts."""
     idx = index.sort_values().unique()
     if len(idx) < 3:
         return "monthly"
     deltas = np.diff(idx.values).astype("timedelta64[D]").astype(int)
     med = np.median(deltas)
-    # seuils typiques: daily≈1, weekly≈7, monthly≈22~31, quarterly≈90, yearly≈365
     if med <= 2:    return "daily"
     if med <= 10:   return "weekly"
     if med <= 40:   return "monthly"
@@ -99,7 +97,7 @@ def ridge_regularize(cov: np.ndarray, ridge: float = 1e-6) -> np.ndarray:
 
 def portfolio_perf(w, mu, cov):
     ret = float(w @ mu)
-    vol = float(np.sqrt(w @ cov @ w))
+    vol = float(np.sqrt(max(w @ cov @ w, 0.0)))
     return ret, vol
 
 def feasible_start(n: int, min_w: float, max_w: float) -> np.ndarray:
@@ -127,16 +125,17 @@ def feasible_start(n: int, min_w: float, max_w: float) -> np.ndarray:
         np.clip(w, min_w, max_w, out=w)
     return w
 
-def _solve_slsqp(objective, n, bounds, cons, w0=None, maxiter=2000):
+def _solve_slsqp(objective, n, bounds, cons, w0=None, maxiter=2000, ftol=1e-10):
     if w0 is None:
         w0 = feasible_start(n, bounds[0][0], bounds[0][1])
     res = minimize(objective, w0, method='SLSQP', bounds=bounds, constraints=cons,
-                   options={'maxiter': maxiter, 'ftol': 1e-10, 'disp': False})
+                   options={'maxiter': maxiter, 'ftol': ftol, 'disp': False})
     if res.success:
         return res.x
+    # second try from equal-weights
     w0b = np.ones(n)/n
     res2 = minimize(objective, w0b, method='SLSQP', bounds=bounds, constraints=cons,
-                    options={'maxiter': maxiter*2, 'ftol': 1e-9, 'disp': False})
+                    options={'maxiter': maxiter*2, 'ftol': ftol*10, 'disp': False})
     if res2.success:
         return res2.x
     raise RuntimeError(f"Echec de l’optimisation : {res.message}")
@@ -165,32 +164,49 @@ def max_return_weights(mu, cov, min_w, max_w):
     w0     = feasible_start(n, min_w, max_w)
     return _solve_slsqp(lambda w: - float(w @ mu), n, bounds, cons, w0=w0)
 
-def frontier_by_tradeoff(mu, cov, min_w, max_w, npts=120, tau_max=None):
+# ---------- FRONTIÈRE EFFICIENTE (cible de rendement) ----------
+def _min_var_for_target_return(mu, cov, r_target, min_w, max_w, w_start=None):
     n = len(mu)
     bounds = [(min_w, max_w)] * n
-    cons   = [{'type':'eq','fun': lambda w: np.sum(w) - 1.0}]
-    if tau_max is None:
-        num = np.linalg.norm(mu)
-        den = np.linalg.norm(cov)
-        tau_max = 50.0 * (num / (den + 1e-12))
-    taus = np.linspace(0.0, tau_max, npts)
+    cons = [
+        {'type': 'eq', 'fun': lambda w: np.sum(w) - 1.0},
+        {'type': 'eq', 'fun': lambda w, rt=r_target: float(w @ mu) - rt}
+    ]
+    if w_start is None:
+        w_start = feasible_start(n, min_w, max_w)
+        w_start = np.clip(w_start + 0.01 * (mu / (np.linalg.norm(mu)+1e-12)), min_w, max_w)
+        w_start = w_start / w_start.sum()
+    def obj(w): return float(w @ cov @ w)
+    return _solve_slsqp(obj, n, bounds, cons, w0=w_start, maxiter=3000, ftol=1e-12)
+
+def efficient_frontier(mu, cov, min_w, max_w, npts=160, eps_keep=1e-10):
+    w_mv = min_var_weights(mu, cov, min_w, max_w)
+    r_mv, v_mv = portfolio_perf(w_mv, mu, cov)
+    w_mr = max_return_weights(mu, cov, min_w, max_w)
+    r_mr, _ = portfolio_perf(w_mr, mu, cov)
+
+    r_grid = np.linspace(r_mv, r_mr, npts)
     pts = []
-    w0 = feasible_start(n, min_w, max_w)
-    for t in taus:
-        def obj(w, tau=t):
-            return float(w @ cov @ w) - tau * float(w @ mu)
+    w_prev = None
+    for rt in r_grid:
         try:
-            w = _solve_slsqp(obj, n, bounds, cons, w0=w0)
-            r, v = portfolio_perf(w, mu, cov)
-            pts.append((r, v))
-            w0 = w
+            w_t = _min_var_for_target_return(mu, cov, rt, min_w, max_w, w_start=w_prev)
+            r_t, v_t = portfolio_perf(w_t, mu, cov)
+            pts.append((r_t, v_t))
+            w_prev = w_t
         except Exception:
             continue
+
     if not pts:
-        return np.empty((0,2))
+        return np.empty((0, 2))
     pts = np.array(pts)
-    order = np.argsort(pts[:,0])
-    return pts[order]
+    order = np.argsort(pts[:, 1])
+    pts = pts[order]
+    cleaned = [pts[0]]
+    for r, v in pts[1:]:
+        if r >= cleaned[-1][0] - eps_keep:
+            cleaned.append([r, v])
+    return np.array(cleaned)
 
 def risk_contrib(w: np.ndarray, cov: np.ndarray) -> np.ndarray:
     tot_var = float(w @ cov @ w)
@@ -306,7 +322,6 @@ def n_for_rebalance_choice(choice: str, data_freq: str, n_custom: int) -> int:
         return max(1, int(n_custom))
     return 1
 
-# ----------- Validation robuste des bornes -----------
 def validate_weight_bounds(min_w: float, max_w: float, n: int, tol: float = 1e-12):
     problems = []
     hints = []
@@ -337,6 +352,173 @@ def warn_tight_bounds(min_w: float, max_w: float, n: int, tol: float = 1e-12):
         msgs.append(f"MAX_W×n proche de 100% (marge {slack_max:.2%}).")
     if msgs:
         st.warning("Bornes très serrées : " + " ".join(msgs))
+
+# ---- Top drawdowns helper (PV-like) ----
+def top_drawdowns_table(wealth: pd.Series, k_annual: int, top_n: int = 10) -> pd.DataFrame:
+    w = wealth.dropna().copy()
+    cummax = w.cummax()
+    dd = w / cummax - 1.0
+
+    peaks, troughs, recovs, depths = [], [], [], []
+    in_dd = False
+    peak_val = None
+    peak_date = None
+    trough_val = None
+    trough_date = None
+
+    for t, val in w.items():
+        if val >= (peak_val if peak_val is not None else -np.inf):
+            if in_dd:
+                recovs.append(t)
+                peaks.append(peak_date)
+                troughs.append(trough_date)
+                depths.append((trough_val/peak_val) - 1.0)
+                in_dd = False
+            peak_val = val
+            peak_date = t
+            trough_val = val
+            trough_date = t
+        else:
+            in_dd = True
+            if val < trough_val:
+                trough_val = val
+                trough_date = t
+
+    if in_dd and peak_val is not None:
+        peaks.append(peak_date)
+        troughs.append(trough_date)
+        recovs.append(pd.NaT)
+        depths.append((trough_val/peak_val) - 1.0)
+
+    df = pd.DataFrame({
+        "Peak": peaks,
+        "Trough": troughs,
+        "Recovery": recovs,
+        "Depth (%)": [d*100 for d in depths],
+    })
+    df["Peak→Trough (days)"] = (pd.to_datetime(df["Trough"]) - pd.to_datetime(df["Peak"])).dt.days
+    df["Trough→Recovery (days)"] = (pd.to_datetime(df["Recovery"]) - pd.to_datetime(df["Trough"])).dt.days
+    df["Total Days"] = (pd.to_datetime(df["Recovery"]) - pd.to_datetime(df["Peak"])).dt.days
+
+    df = df.sort_values("Depth (%)").head(top_n).reset_index(drop=True)
+    return df
+
+# ---- PV metrics helper ----
+def pv_stats_from_returns(
+    ret_native: pd.Series,
+    monthly_ret: pd.Series,
+    wealth: pd.Series,
+    k_annual: int,
+    alpha: float = 0.05
+) -> pd.DataFrame:
+    # --- Moyennes/vol mensuelles (style PV) ---
+    m_arith_m = monthly_ret.mean()
+    m_std_m   = monthly_ret.std(ddof=1)
+    m_geo_m   = (1 + monthly_ret).prod()**(1/len(monthly_ret)) - 1 if len(monthly_ret) > 0 else np.nan
+
+    # Annualisations depuis mensuel
+    arith_ann = (1 + m_arith_m)**12 - 1 if pd.notna(m_arith_m) else np.nan
+    geo_ann   = (1 + m_geo_m)**12 - 1 if pd.notna(m_geo_m) else np.nan
+    std_ann   = m_std_m * np.sqrt(12) if pd.notna(m_std_m) else np.nan
+
+    # Downside deviation (mensuelle) & Sortino (annualisé)
+    downside = monthly_ret[monthly_ret < 0]
+    downside_dev_m = np.sqrt(np.mean(np.square(downside))) if len(downside) else np.nan
+    sortino = (m_arith_m*12) / (downside_dev_m*np.sqrt(12)) if (pd.notna(m_arith_m) and downside_dev_m and downside_dev_m>0) else np.nan
+
+    # Sharpe annualisé (depuis la granularité native)
+    vol_ann_native = ret_native.std(ddof=1) * np.sqrt(k_annual)
+    sharpe_ann = (ret_native.mean() * k_annual) / vol_ann_native if (vol_ann_native and vol_ann_native>0) else np.nan
+
+    # MaxDD et CALMAR = CAGR / |MaxDD|
+    dd_series = wealth / wealth.cummax() - 1.0
+    max_dd = dd_series.min()  # négatif
+    # CAGR annualisé calculé proprement depuis la durée (en années) observée
+    n_periods = ret_native.count()
+    years = n_periods / k_annual if k_annual > 0 else np.nan
+    cagr = (wealth.iloc[-1] ** (1/years) - 1) if (pd.notna(years) and years > 0) else np.nan
+    calmar = (cagr / abs(max_dd)) if (pd.notna(cagr) and pd.notna(max_dd) and max_dd < 0) else np.nan
+
+    # Skew / Kurtosis (excess)
+    skew  = ret_native.skew()
+    ex_k  = ret_native.kurt()
+
+    # VaR / CVaR (mensuels, pertes positives)
+    if len(monthly_ret) > 0:
+        hist_var = -np.percentile(monthly_ret.dropna(), alpha*100)
+        mu_m, sd_m = monthly_ret.mean(), monthly_ret.std(ddof=1)
+        z = -1.6448536269514729  # 5%
+        anal_var = -(mu_m + z*sd_m)
+        thr = np.percentile(monthly_ret.dropna(), alpha*100)
+        cvar = -monthly_ret[monthly_ret <= thr].mean() if (monthly_ret[monthly_ret <= thr].size > 0) else np.nan
+    else:
+        hist_var = anal_var = cvar = np.nan
+
+    # Positive periods + % et Gain/Loss ratio
+    pos_n = int((ret_native > 0).sum())
+    tot_n = int(ret_native.count())
+    pos_pct = (pos_n / tot_n) if tot_n else np.nan
+    pos_text = f"{pos_n} / {tot_n} ({pos_pct*100:.2f}%)" if tot_n else "N/A"
+
+    avg_gain = ret_native[ret_native > 0].mean()
+    avg_loss = -ret_native[ret_native < 0].mean() if (ret_native < 0).any() else np.nan
+    gl_ratio = (avg_gain / avg_loss) if (avg_loss and avg_loss>0) else np.nan
+
+    # SWR & PWR (approximations robustes)
+    pwr = geo_ann
+    if pd.notna(geo_ann) and pd.notna(std_ann):
+        mu_log = np.log1p(geo_ann)
+        swr = np.expm1(mu_log - 0.5 * (std_ann**2))
+    else:
+        swr = np.nan
+
+    rows = [
+        ("Arithmetic Mean (monthly)",     m_arith_m),
+        ("Arithmetic Mean (annualized)",  arith_ann),
+        ("Geometric Mean (monthly)",      m_geo_m),
+        ("Geometric Mean (annualized)",   geo_ann),
+        ("Standard Deviation (monthly)",  m_std_m),
+        ("Standard Deviation (annualized)", std_ann),
+        ("Downside Deviation (monthly)",  downside_dev_m),
+        ("Maximum Drawdown",              max_dd),
+        ("Sharpe Ratio",                  sharpe_ann),
+        ("Sortino Ratio",                 sortino),
+        ("Calmar Ratio",                  calmar),
+        ("Skewness",                      skew),
+        ("Excess Kurtosis",               ex_k),
+        ("Historical Value-at-Risk (5%)", hist_var),
+        ("Analytical Value-at-Risk (5%)", anal_var),
+        ("Conditional Value-at-Risk (5%)", cvar),
+        ("Safe Withdrawal Rate",          swr),
+        ("Perpetual Withdrawal Rate",     pwr),
+        ("Positive Periods",              pos_text),
+        ("Gain/Loss Ratio",               gl_ratio),
+    ]
+    df = pd.DataFrame(rows, columns=["Metric", "Value"]).set_index("Metric")
+
+    # Formatage pour affichage
+    pct_like = [
+        "Arithmetic Mean (monthly)", "Arithmetic Mean (annualized)",
+        "Geometric Mean (monthly)", "Geometric Mean (annualized)",
+        "Standard Deviation (monthly)", "Standard Deviation (annualized)",
+        "Downside Deviation (monthly)", "Maximum Drawdown",
+        "Historical Value-at-Risk (5%)", "Analytical Value-at-Risk (5%)",
+        "Conditional Value-at-Risk (5%)",
+        "Safe Withdrawal Rate", "Perpetual Withdrawal Rate",
+    ]
+    for m in pct_like:
+        if m in df.index:
+            v = df.loc[m, "Value"]
+            df.loc[m, "Value"] = f"{float(v)*100:.2f}%" if pd.notna(v) else "N/A"
+
+    for m in ["Sharpe Ratio", "Sortino Ratio", "Calmar Ratio", "Skewness", "Excess Kurtosis", "Gain/Loss Ratio"]:
+        if m in df.index:
+            v = df.loc[m, "Value"]
+            df.loc[m, "Value"] = f"{float(v):.2f}" if pd.notna(v) else "N/A"
+
+    # Positive Periods est déjà sous forme texte "79 / 117 (67.52%)" — ne pas reformater
+    return df
+
 
 # ============================ Cache ============================
 @st.cache_data(show_spinner=False)
@@ -561,7 +743,7 @@ with tab_fig:
     rets_mc = W @ mu
     vols_mc = np.sqrt(np.einsum('ij,jk,ik->i', W, cov, W))
 
-    front = frontier_by_tradeoff(mu, cov, min_w, max_w, npts=120)
+    front = efficient_frontier(mu, cov, min_w, max_w, npts=160)
 
     fig = go.Figure()
     fig.add_trace(go.Scatter(
@@ -570,10 +752,11 @@ with tab_fig:
         name="Portefeuilles aléatoires (bornés)",
         hovertemplate="Vol: %{x:.2%}<br>Ret: %{y:.2%}<extra></extra>"
     ))
-    if len(front) > 0:
+    if front.size > 0:
         fig.add_trace(go.Scatter(
             x=front[:,1], y=front[:,0], mode="lines",
-            name="Frontière efficiente (bornée, τ)",
+            name="Frontière efficiente",
+            line=dict(width=3),
             hovertemplate="Vol: %{x:.2%}<br>Ret: %{y:.2%}<extra></extra>"
         ))
     for name, w, sym in [("Max Sharpe", w_ms, "star"), ("Min Variance", w_mv, "circle"), ("Max Return", w_mr, "square")]:
@@ -591,7 +774,7 @@ with tab_fig:
         hovermode="closest"
     )
     fig.update_xaxes(tickformat=".0%"); fig.update_yaxes(tickformat=".0%")
-    st.plotly_chart(fig, use_container_width=True)
+    st.plotly_chart(fig, use_container_width=True, key="fig_frontier")
 
     # Camemberts
     def pie_series(weights: np.ndarray, labels: list, threshold: float = 0.02, eps: float = 1e-6) -> pd.Series:
@@ -615,19 +798,19 @@ with tab_fig:
     pies = make_subplots(rows=1, cols=3, specs=[[{"type": "domain"}]*3],
                          subplot_titles=("Max Sharpe", "Min Variance", "Max Return"))
 
-    def add_pie(fig, r, c, s: pd.Series):
+    def add_pie(fig_, r, c, s: pd.Series):
         if len(s) == 1:
-            fig.add_trace(go.Pie(labels=[s.index[0]], values=[1.0], hole=0.35,
-                                 sort=False, textinfo="label+percent", textposition="inside", showlegend=False), r, c)
+            fig_.add_trace(go.Pie(labels=[s.index[0]], values=[1.0], hole=0.35,
+                                  sort=False, textinfo="label+percent", textposition="inside", showlegend=False), r, c)
         else:
-            fig.add_trace(go.Pie(labels=s.index.tolist(), values=s.values.tolist(), hole=0.35,
-                                 sort=False, textinfo="percent+label"), r, c)
+            fig_.add_trace(go.Pie(labels=s.index.tolist(), values=s.values.tolist(), hole=0.35,
+                                  sort=False, textinfo="percent+label"), r, c)
 
     add_pie(pies, 1, 1, s_ms)
     add_pie(pies, 1, 2, s_mv)
     add_pie(pies, 1, 3, s_mr)
     pies.update_layout(template="plotly_white")
-    st.plotly_chart(pies, use_container_width=True)
+    st.plotly_chart(pies, use_container_width=True, key="fig_pies")
 
     st.subheader("Poids par portefeuille (%)")
     weights_df = pd.DataFrame({"Max Sharpe": w_ms, "Min Variance": w_mv, "Max Return": w_mr}, index=tickers)
@@ -643,7 +826,7 @@ with tab_corr:
     with c2:
         months_win = st.number_input("Fenêtre (mois) pour la matrice/rolling", value=24, step=1, min_value=3, max_value=240)
     with c3:
-        freq_used = freq  # utilise la fréquence choisie (auto ou manuelle)
+        freq_used = freq
 
     win = months_to_periods(int(months_win), freq_used)
     st.caption(f"Fenêtre utilisée : {win} périodes ({months_win} mois, fréquence {freq_used})")
@@ -658,7 +841,7 @@ with tab_corr:
         colorscale="RdBu", zmin=-1, zmax=1, zmid=0, colorbar=dict(title="Corr")
     ))
     heat.update_layout(template="plotly_white", height=600)
-    st.plotly_chart(heat, use_container_width=True)
+    st.plotly_chart(heat, use_container_width=True, key="fig_corr_heat")
 
     top_pos, top_neg = top_corr_pairs(corr, k=3)
     st.subheader("Top corrélations (fenêtre courante)")
@@ -697,16 +880,16 @@ with tab_corr:
         figc.add_hline(y=0, line_width=1, line_dash="dash", line_color="gray")
         figc.update_layout(template="plotly_white", yaxis_title="Corrélation roulante", xaxis_title="Date")
         figc.update_yaxes(range=[-1, 1])
-        st.plotly_chart(figc, use_container_width=True)
+        st.plotly_chart(figc, use_container_width=True, key="fig_corr_roll")
     else:
         st.info("Sélectionnez deux actifs distincts.")
 
     st.subheader("Corrélation de paniers (égal-pondérés)")
     c1, c2 = st.columns(2)
     with c1:
-        basket_a = st.multiselect("Panier A — sélectionner des actifs", tickers, default=[])
+        basket_a = st.multiselect("Panier A — sélectionner des actifs", tickers, default=[], key="basket_a")
     with c2:
-        basket_b = st.multiselect("Panier B — sélectionner des actifs", tickers, default=[])
+        basket_b = st.multiselect("Panier B — sélectionner des actifs", tickers, default=[], key="basket_b")
     if len(basket_a) >= 1 and len(basket_b) >= 1:
         Ra = returns[basket_a].mean(axis=1)
         Rb = returns[basket_b].mean(axis=1)
@@ -723,7 +906,7 @@ with tab_corr:
             figb.add_hline(y=0, line_width=1, line_dash="dash", line_color="gray")
             figb.update_layout(template="plotly_white", yaxis_title="Corrélation roulante paniers", xaxis_title="Date")
             figb.update_yaxes(range=[-1, 1])
-            st.plotly_chart(figb, use_container_width=True)
+            st.plotly_chart(figb, use_container_width=True, key="fig_corr_baskets")
     else:
         st.info("Choisissez au moins un actif dans chaque panier.")
 
@@ -767,7 +950,7 @@ with tab_bt:
     else:
         w_init = np.ones(n) / n
 
-    # Éditeur de poids avec contrôle de somme
+    # Éditeur de poids
     df_edit = pd.DataFrame({"Ticker": tickers, "Poids_%": (w_init * 100)})
     edited = st.data_editor(
         df_edit,
@@ -779,7 +962,6 @@ with tab_bt:
     )
     w_user_pct = np.asarray(edited["Poids_%"].values, dtype=float)
     total_pct = float(np.nansum(w_user_pct))
-
     if not np.isfinite(total_pct):
         st.error("La somme des poids est invalide (NaN/inf). Corrige les entrées."); st.stop()
     if total_pct <= 0:
@@ -789,10 +971,10 @@ with tab_bt:
         st.error(f"La somme des poids ({total_pct:.2f}%) dépasse 100% de {excess:.2f}%. Réduis les poids."); st.stop()
     if total_pct < 100.0 - 1e-9:
         st.info(f"La somme des poids est {total_pct:.2f}%. Ils seront normalisés à 100% pour le backtest.")
-
     w_user = np.clip(w_user_pct, 0, None) / total_pct
     st.caption(f"Somme des poids saisie : {total_pct:.2f}% → utilisée après normalisation : 100.00%")
 
+    # Choix du mode + fréquence de rebalancement
     mode = st.radio("Mode de backtest", ["Buy & Hold (sans rebalancement)", "Rebalancement"],
                     horizontal=True, index=1)
     if mode == "Rebalancement":
@@ -814,6 +996,27 @@ with tab_bt:
     wealth = wealth_buy_hold(returns, w_user) if mode.startswith("Buy") else wealth_rebalanced_every_n(returns, w_user, n_reb=n_reb)
     metrics, dd = perf_metrics(wealth, freq_k=k)
 
+    # ====== Contrôles d'affichage type PV ======
+    cA, cB, cC, cD = st.columns(4)
+    with cA:
+        log_scale = st.checkbox("Échelle log (Wealth)", value=False)
+    with cB:
+        roll_months = st.number_input("Rolling window (mois)", value=12, min_value=3, max_value=120, step=3)
+    with cC:
+        hist_bins = st.number_input("Histogram bins", value=50, min_value=10, max_value=200, step=10)
+    with cD:
+        show_drawdowns = st.checkbox("Montrer le tableau des top drawdowns", value=True)
+
+    n_roll = months_to_periods(int(roll_months), freq)
+
+    # Rendements à la granularité native
+    ret = wealth.pct_change().dropna()
+
+    # Rendements mensuels & annuels
+    monthly_ret = (1 + ret).resample("ME").prod() - 1
+    annual_ret  = (1 + monthly_ret).resample("YE").prod() - 1
+
+    # ====== Métriques du backtest simple ======
     st.subheader("Métriques du backtest")
     mdf = pd.DataFrame({
         "Total Return": [f"{metrics['Total Return']*100:.2f}%"],
@@ -825,19 +1028,177 @@ with tab_bt:
     })
     st.dataframe(mdf, use_container_width=True)
 
+    # ====== Risk & Return Metrics (style PV) ======
+    st.subheader("Risk & Return Metrics")
+    pv_df = pv_stats_from_returns(ret_native=ret, monthly_ret=monthly_ret, wealth=wealth, k_annual=k)
+    st.dataframe(pv_df, use_container_width=True)
+
+    # ====== Courbes principales (Wealth + Drawdown) ======
     st.subheader("Courbes de backtest")
     col1, col2 = st.columns(2)
     with col1:
+        wealth_plot = wealth.where(wealth > 0, np.nan) if log_scale else wealth
         figw = go.Figure()
-        figw.add_trace(go.Scatter(x=wealth.index, y=wealth.values, mode="lines", name="Wealth (base=1.0)"))
+        figw.add_trace(go.Scatter(x=wealth_plot.index, y=wealth_plot.values, mode="lines",
+                                  name="Wealth (base=1.0)"))
         figw.update_layout(template="plotly_white", yaxis_title="Valeur du portefeuille", xaxis_title="Date")
-        st.plotly_chart(figw, use_container_width=True)
+        if log_scale:
+            figw.update_yaxes(type="log")
+        st.plotly_chart(figw, use_container_width=True, key="fig_bt_wealth")
     with col2:
         figd = go.Figure()
         figd.add_trace(go.Scatter(x=dd.index, y=dd.values, mode="lines", name="Drawdown"))
         figd.add_hline(y=0, line_width=1, line_dash="dash", line_color="gray")
         figd.update_layout(template="plotly_white", yaxis_title="Drawdown", xaxis_title="Date")
         figd.update_yaxes(tickformat=".0%")
-        st.plotly_chart(figd, use_container_width=True)
+        st.plotly_chart(figd, use_container_width=True, key="fig_bt_dd")
 
-    st.caption("‘Auto’ = même fréquence que les données (daily/weekly/monthly…). Les métriques sont annualisées avec la fréquence choisie.")
+    # ====== Analyses complémentaires (style Portfolio Visualizer) ======
+    st.subheader("Analyses complémentaires")
+
+    # === Rendements annuels : vue combinée (switch) ===
+    st.subheader("Rendements annuels — vue combinée")
+    annual_view = st.radio(
+        "Vue :", 
+        ["Portefeuille", "Par actif"],
+        horizontal=True,
+        index=0,
+        key="annual_returns_view"
+    )
+
+    # (re)calcule les jeux nécessaires
+    # annual_ret (portefeuille) existe déjà plus haut, on le sécurise :
+    annual_ret_port = annual_ret.copy()
+
+    # rendements annuels par actif
+    asset_ret = prices.pct_change().dropna()
+    asset_ret_y = pd.DataFrame()
+    if not asset_ret.empty:
+        asset_ret_m = (1 + asset_ret).resample("ME").prod() - 1
+        asset_ret_y = (1 + asset_ret_m).resample("YE").prod() - 1  # DataFrame [années x actifs]
+
+    fig_annual_combo = go.Figure()
+
+    if annual_view == "Portefeuille":
+        if not annual_ret_port.empty:
+            y = annual_ret_port.index.year.astype(int)
+            fig_annual_combo.add_trace(go.Bar(x=y, y=annual_ret_port.values, name="Portefeuille"))
+            fig_annual_combo.add_hline(y=0, line_width=1, line_dash="dash", line_color="gray")
+            fig_annual_combo.update_layout(
+                template="plotly_white",
+                xaxis_title="Année",
+                yaxis_title="Rendement annuel",
+                title="Rendements annuels du portefeuille"
+            )
+            fig_annual_combo.update_yaxes(tickformat=".0%")
+        else:
+            st.info("Pas assez d'historique pour le rendement annuel du portefeuille.")
+    else:  # "Par actif"
+        if not asset_ret_y.empty:
+            years = asset_ret_y.index.year.astype(int)
+            for col in asset_ret_y.columns:
+                fig_annual_combo.add_trace(go.Bar(x=years, y=asset_ret_y[col].values, name=col))
+            fig_annual_combo.add_hline(y=0, line_width=1, line_dash="dash", line_color="gray")
+            fig_annual_combo.update_layout(
+                template="plotly_white",
+                barmode="group",  # groupé par année
+                xaxis_title="Year",
+                yaxis_title="Return",
+                title="Annual Returns of Portfolio Assets",
+                legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
+            )
+            fig_annual_combo.update_yaxes(tickformat=".0%")
+        else:
+            st.info("Séries d’actifs insuffisantes pour les rendements annuels par actif.")
+
+    st.plotly_chart(fig_annual_combo, use_container_width=True, key="fig_bt_annual_combo")
+
+
+    # 2) Histogramme des rendements (granularité native)
+    fig_hist = go.Figure()
+    if not ret.empty:
+        fig_hist.add_trace(go.Histogram(x=ret.values, nbinsx=int(hist_bins), name="Rendements"))
+        fig_hist.add_vline(x=0.0, line_width=1, line_dash="dash", line_color="gray")
+        fig_hist.add_vline(x=float(ret.mean()), line_width=1, line_dash="dot", line_color="black")
+        fig_hist.update_layout(template="plotly_white", xaxis_title="Rendement par période",
+                               yaxis_title="Fréquence", title="Distribution des rendements")
+        fig_hist.update_xaxes(tickformat=".1%")
+    st.plotly_chart(fig_hist, use_container_width=True, key="fig_bt_hist")
+
+    # 3) Rolling CAGR / Vol / Sharpe
+    colr1, colr2, colr3 = st.columns(3)
+    rolling_cagr = pd.Series(np.nan, index=wealth.index)
+    rolling_cagr = pd.Series(np.nan, index=wealth.index)
+    if len(wealth) > n_roll:
+        base = wealth.shift(n_roll).replace(0, np.nan)
+        ratio = (wealth / base)
+        ratio = ratio.replace([np.inf, -np.inf], np.nan)
+        rolling_cagr = ratio**(k / n_roll) - 1
+
+    rolling_vol = ret.rolling(n_roll).std(ddof=1) * np.sqrt(k)
+    rolling_mean = ret.rolling(n_roll).mean()
+    rolling_sharpe = (rolling_mean * k) / rolling_vol.replace(0, np.nan)
+
+    with colr1:
+        fig_rcagr = go.Figure()
+        fig_rcagr.add_trace(go.Scatter(x=rolling_cagr.index, y=rolling_cagr.values, mode="lines", name="Rolling CAGR"))
+        fig_rcagr.add_hline(y=0, line_width=1, line_dash="dash", line_color="gray")
+        fig_rcagr.update_layout(template="plotly_white", xaxis_title="Date", yaxis_title="CAGR (annualisé)",
+                                title=f"Rolling CAGR — fenêtre {roll_months} mois")
+        fig_rcagr.update_yaxes(tickformat=".0%")
+        st.plotly_chart(fig_rcagr, use_container_width=True, key="fig_bt_roll_cagr")
+    with colr2:
+        fig_rvol = go.Figure()
+        fig_rvol.add_trace(go.Scatter(x=rolling_vol.index, y=rolling_vol.values, mode="lines", name="Rolling Vol"))
+        fig_rvol.update_layout(template="plotly_white", xaxis_title="Date", yaxis_title="Vol (annualisée)",
+                               title=f"Rolling Vol — fenêtre {roll_months} mois")
+        fig_rvol.update_yaxes(tickformat=".0%")
+        st.plotly_chart(fig_rvol, use_container_width=True, key="fig_bt_roll_vol")
+    with colr3:
+        fig_rsh = go.Figure()
+        fig_rsh.add_trace(go.Scatter(x=rolling_sharpe.index, y=rolling_sharpe.values, mode="lines", name="Rolling Sharpe"))
+        fig_rsh.add_hline(y=0, line_width=1, line_dash="dash", line_color="gray")
+        fig_rsh.update_layout(template="plotly_white", xaxis_title="Date", yaxis_title="Sharpe",
+                              title=f"Rolling Sharpe — fenêtre {roll_months} mois")
+        st.plotly_chart(fig_rsh, use_container_width=True, key="fig_bt_roll_sharpe")
+
+    # 4) Calendar heatmap (mensuel)
+    st.subheader("Calendar Heatmap — rendements mensuels")
+    if not monthly_ret.empty:
+        cal = monthly_ret.to_frame("ret").copy()
+        cal["Year"] = cal.index.year
+        cal["Month"] = cal.index.month
+        pivot = cal.pivot(index="Year", columns="Month", values="ret").sort_index()
+        pivot = pivot.reindex(columns=range(1,13))
+
+        # bornes symétriques robustes
+        zabs = np.nanmax(np.abs(pivot.values))
+        zabs = float(zabs) if np.isfinite(zabs) and zabs > 0 else 0.01
+
+        heatmap = go.Figure(data=go.Heatmap(
+            z=pivot.values,
+            x=["Jan","Fév","Mar","Avr","Mai","Jun","Jul","Aoû","Sep","Oct","Nov","Déc"],
+            y=pivot.index.astype(int),
+            colorscale="RdBu",
+            zmin=-zabs, zmax=zabs, zmid=0,
+            colorbar=dict(title="Mensuel"),
+            hovertemplate="Année %{y}<br>%{x}: %{z:.2%}<extra></extra>"
+        ))
+    
+        heatmap.update_layout(template="plotly_white", xaxis_title="", yaxis_title="Année")
+        st.plotly_chart(heatmap, use_container_width=True, key="fig_bt_cal_heat")
+
+    
+
+    # 6) Tableaux (mensuel + top drawdowns)
+    # 6) Top drawdowns uniquement
+    if show_drawdowns:
+        st.subheader("Top drawdowns")
+        dd_table = top_drawdowns_table(wealth, k_annual=k, top_n=10)
+        if not dd_table.empty:
+            fmt = dd_table.copy()
+            fmt["Depth (%)"] = fmt["Depth (%)"].map(lambda x: f"{x:.2f}%")
+            st.dataframe(fmt, use_container_width=True)
+        else:
+            st.info("Pas de drawdown identifié.")
+
