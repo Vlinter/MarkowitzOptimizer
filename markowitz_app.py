@@ -4,6 +4,7 @@
 # - Comparaison benchmark robuste (align + squeeze 1D)
 # - Drawdown du benchmark superposé au graphe des DD
 # - Corrections précédentes conservées (fetch_benchmark_prices .name, etc.)
+# - python -m streamlit run markowitz_app.py
 # =========================================================
 import warnings
 warnings.filterwarnings(
@@ -1055,18 +1056,48 @@ elif tab_choice == "Backtest":
         w_user = np.clip(w_user_pct, 0, None) / total_pct
         st.caption(f"Somme des poids saisie : {total_pct:.2f}% → utilisée après normalisation : 100.00%")
 
+    # ---- Rebalancing: pick best-by-default (Sharpe) ----
     if mode == "Rebalancement":
-        col_rb1, col_rb2 = st.columns([2,1])
+        # Candidates (excluding "Tous les N périodes" for the auto scan)
+        reb_opts = [
+            "Auto (fréquence des données)", "Mensuel", "Trimestriel", "Annuel", "Tous les N périodes"
+        ]
+
+        # Evaluate Sharpe for each candidate frequency
+        def _score_for(opt_label: str) -> float:
+            n_trial = n_for_rebalance_choice(opt_label, freq, n_custom=1)
+            w_trial, _ = wealth_rebalanced_every_n(returns, w_user, n_reb=n_trial)
+            m_trial, _ = perf_metrics(w_trial, freq_k=k)
+            s = m_trial.get("Sharpe", np.nan)
+            return s if pd.notna(s) else -np.inf
+
+        # Compute best among the 4 fixed options
+        scan_opts = reb_opts[:4]  # no "Tous les N périodes"
+        scores = {opt: _score_for(opt) for opt in scan_opts}
+        best_opt = max(scores, key=scores.get) if len(scores) else "Auto (fréquence des données)"
+        default_index = reb_opts.index(best_opt)
+
+        col_rb1, col_rb2 = st.columns([2, 1])
         with col_rb1:
-            reb_choice = st.selectbox("Fréquence de rebalancement",
-                                      ["Auto (fréquence des données)", "Mensuel", "Trimestriel", "Annuel", "Tous les N périodes"], index=0, key="rebalance_freq_select")
+            reb_choice = st.selectbox(
+                "Fréquence de rebalancement",
+                reb_opts,
+                index=default_index,                # ← preselect best Sharpe
+                key="reb_freq_select"
+            )
+            st.caption(f"Par défaut : **{best_opt}** (Sharpe max).")
         with col_rb2:
-            n_custom = st.number_input("N périodes (si 'Tous les N périodes')", value=1, min_value=1, step=1,
-                                     disabled=(reb_choice != "Tous les N périodes"), key="rebalance_n_input")
+            n_custom = st.number_input(
+                "N périodes (si 'Tous les N périodes')",
+                value=1, min_value=1, step=1,
+                disabled=(reb_choice != "Tous les N périodes"),
+                key="reb_n_custom"
+            )
+
         n_reb = n_for_rebalance_choice(reb_choice, freq, n_custom)
-        st.caption(f"Rebalancement tous les {n_reb} pas de temps.")
     else:
         n_reb = None
+
 
     # Wealth, metrics, DD
     wealth, weights_history = (wealth_buy_hold(returns, w_user) if mode.startswith("Buy") 
@@ -1197,7 +1228,20 @@ elif tab_choice == "Backtest":
             fill='tozeroy', fillcolor='rgba(70,130,180,0.15)'
         ))
     figd.add_hline(y=0, line_width=1, line_dash="dash", line_color="gray")
-    figd.update_layout(template="plotly_white", yaxis_title="Drawdown", xaxis_title="Date")
+    figd.update_layout(
+        template="plotly_white",
+        yaxis_title="Drawdown",
+        xaxis_title="Date",
+        legend=dict(
+            orientation="h",   # légende horizontale
+            yanchor="bottom",
+            y=1.02,            # un peu au-dessus du plot
+            xanchor="left",
+            x=0
+        ),
+        margin=dict(t=80)      # marge haute pour ne pas couper la légende
+    )
+
     figd.update_yaxes(tickformat=".0%")
     st_plotly_chart(figd)
 
