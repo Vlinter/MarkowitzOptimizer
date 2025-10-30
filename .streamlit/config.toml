@@ -1,16 +1,14 @@
 [theme]
-# Couleur primaire
-primaryColor="#8899AA"
+# Un bleu vif mais pas "fluo", excellent sur le gris
+primaryColor="#0A84FF" 
 
-# Fond principal (sombre)
-backgroundColor="#0E1117"
+# Un gris foncé neutre, pas un noir absolu
+backgroundColor="#222222"
 
-# Fond secondaire (pour la sidebar, les expanders, les conteneurs)
-secondaryBackgroundColor="#1C202C"
+# Une couleur légèrement plus claire pour les conteneurs et la sidebar
+secondaryBackgroundColor="#333333"
 
-# Couleur du texte
-textColor="#FAFAFA"
+# Un blanc légèrement cassé pour réduire le contraste
+textColor="#E0E0E0"
 
-# Police (optionnel, mais "sans serif" est plus propre)
 font="sans serif"
-
