@@ -38,6 +38,22 @@ except Exception:
 
 st.set_page_config(page_title="Portfolio Optimizer", layout="wide")
 
+# ---- CSS Personnalisé pour arrondir les coins ----
+st.markdown("""
+<style>
+/* Arrondir les coins des conteneurs bordés */
+[data-testid="stVerticalBlock"] > [style*="border: 1px solid"] {
+    border-radius: 10px;
+}
+/* Arrondir les coins des expanders */
+[data-testid="stExpander"] {
+    border-radius: 10px;
+}
+</style>
+""", unsafe_allow_html=True)
+# ---- Fin du CSS ----
+
+
 # ---- helper rerun (compat old/new streamlit) ----
 def _safe_rerun():
     if hasattr(st, "rerun"): st.rerun()
@@ -680,16 +696,24 @@ except Exception as e:
 
 st.divider()
 st.markdown("#### 3. Analyse")
-tab_choice = st.radio(
-    "Navigation",
-    ["Données", "Optimisation", "Graphiques", "Corrélation", "Backtest"],
-    horizontal=True,
-    key="active_tab",
-    label_visibility="collapsed"
-)
+
+# ====================================================================
+# ========== SECTION DE NAVIGATION (REMPLACEMENT) ==========
+# ====================================================================
+# On remplace le st.radio par st.tabs pour un look plus moderne
+# qui s'intègre parfaitement à la structure de ton code.
+
+tab_data, tab_opti, tab_charts, tab_corr, tab_backtest = st.tabs([
+    "📊 Données", 
+    "⚙️ Optimisation", 
+    "📈 Graphiques", 
+    "🔗 Corrélation", 
+    "⏱️ Backtest"
+])
+
 
 # ============================ Onglet Données ============================
-if tab_choice == "Données":
+with tab_data:
     st.subheader("Tableau de prix utilisé (après filtre de dates et exclusions)")
     st.dataframe(prices, width='stretch')
     if availability is not None and not availability.empty:
@@ -800,7 +824,7 @@ if tab_choice == "Données":
         st_plotly_chart(fig_hist_ret)
 
 # ============================ Onglet Optimisation ============================
-elif tab_choice == "Optimisation":
+with tab_opti:
     vol = np.sqrt(np.diag(cov)); shp = np.where(vol > 0, (mu)/vol, np.nan)
     st.subheader("Rendements, volatilités et Sharpe (annualisés)")
     df_metrics = pd.DataFrame({"Return_ann": mu, "Vol_ann": vol, "Sharpe_ann": shp}, index=tickers)
@@ -847,13 +871,13 @@ elif tab_choice == "Optimisation":
     st.dataframe((df_rc*100).round(2).astype(str) + " %", width='stretch')
 
 # ============================ Onglet Graphiques ============================
-elif tab_choice == "Graphiques":
+with tab_charts:
     n = len(tickers)
     st.subheader("Nuage de portefeuilles, frontière efficiente (bornée) et portefeuilles optimaux")
     fig = go.Figure()
     fig.add_trace(go.Scatter(
         x=vols_mc, y=rets_mc, mode="markers",
-        marker=dict(size=4, opacity=0.35),
+        marker=dict(size=4, opacity=0.35, color="#0A84FF"), # Utilise la couleur primaire
         name="Portefeuilles aléatoires (bornés)",
         hovertemplate="Vol: %{x:.2%}<br>Ret: %{y:.2%}<extra></extra>"
     ))
@@ -861,14 +885,14 @@ elif tab_choice == "Graphiques":
         fig.add_trace(go.Scatter(
             x=front[:,1], y=front[:,0], mode="lines",
             name="Frontière efficiente",
-            line=dict(width=3, color="black"),
+            line=dict(width=3, color="white"), # Blanc sur fond sombre
             hovertemplate="Vol: %{x:.2%}<br>Ret: %{y:.2%}<extra></extra>"
         ))
     for name, w, sym, c in [
             ("Max Sharpe", w_ms, "star", "red"), 
             ("Min Variance", w_mv, "circle", "green"), 
             ("Risk Parity", w_rp, "diamond", "purple"),
-            ("Max Return", w_mr, "square", "blue")
+            ("Max Return", w_mr, "square", "cyan") # Bleu sur fond sombre
         ]:
         r, v = portfolio_perf(w, mu, cov)
         fig.add_trace(go.Scatter(
@@ -878,7 +902,8 @@ elif tab_choice == "Graphiques":
         ))
     fig.update_layout(
         xaxis_title="Volatilité (ann.)", yaxis_title="Rendement (ann.)",
-        template="plotly_white", legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+        template="plotly_dark", # Utilise le template sombre de plotly
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
         hovermode="closest"
     )
     fig.update_xaxes(tickformat=".0%"); fig.update_yaxes(tickformat=".0%")
@@ -909,7 +934,7 @@ elif tab_choice == "Graphiques":
             fig_.add_trace(go.Pie(labels=s.index.tolist(), values=s.values.tolist(), hole=0.35,
                                  sort=False, textinfo="percent+label"), r, c)
     add_pie(pies, 1, 1, s_ms); add_pie(pies, 1, 2, s_mv); add_pie(pies, 1, 3, s_rp); add_pie(pies, 1, 4, s_mr)
-    pies.update_layout(template="plotly_white", showlegend=False)
+    pies.update_layout(template="plotly_dark", showlegend=False) # Template sombre
     st_plotly_chart(pies)
 
     st.subheader("Poids par portefeuille (%)")
@@ -922,7 +947,7 @@ elif tab_choice == "Graphiques":
     st.dataframe((weights_df * 100).round(2).astype(str) + " %", width='stretch')
 
 # ============================ Onglet Corrélation ============================
-elif tab_choice == "Corrélation":
+with tab_corr:
     st.subheader("Paramètres de corrélation")
     c1, c2, c3 = st.columns(3)
     with c1:
@@ -943,7 +968,7 @@ elif tab_choice == "Corrélation":
         z=corr_ord.values, x=corr_ord.columns, y=corr_ord.index,
         colorscale="RdBu", zmin=-1, zmax=1, zmid=0, colorbar=dict(title="Corr")
     ))
-    heat.update_layout(template="plotly_white", height=600, xaxis_showgrid=False, yaxis_showgrid=False)
+    heat.update_layout(template="plotly_dark", height=600, xaxis_showgrid=False, yaxis_showgrid=False) # Template sombre
     st_plotly_chart(heat)
 
     top_pos, top_neg = top_corr_pairs(corr, k=3)
@@ -996,7 +1021,7 @@ elif tab_choice == "Corrélation":
             hovertemplate=f"Date: %{{x|%Y-%m-%d}}<br>Corrélation: %{{y:.2f}}<extra></extra>"
         ))
         figc.update_layout(
-            template="plotly_white",
+            template="plotly_dark", # Template sombre
             yaxis_title="Coefficient de Corrélation", xaxis_title="Date",
             title=f"Corrélation Glissante ({win} Périodes) : {asset_a} vs. {asset_b}",
             yaxis_range=[-1, 1], legend=dict(x=0.01, y=0.99, xanchor="left", yanchor="top"),
@@ -1007,7 +1032,7 @@ elif tab_choice == "Corrélation":
         st.info("Sélectionnez deux actifs distincts.")
 
 # ============================ Onglet Backtest ============================
-elif tab_choice == "Backtest":
+with tab_backtest:
     st.subheader("Configuration du Backtest")
     n = len(tickers)
     cfg1, cfg2 = st.columns(2)
@@ -1200,13 +1225,13 @@ elif tab_choice == "Backtest":
     wealth_plot = wealth.where(wealth > 0, np.nan) if log_scale else wealth
 
     figw = go.Figure()
-    figw.add_trace(go.Scatter(x=wealth_plot.index, y=wealth_plot.values, mode="lines", name="Portefeuille"))
+    figw.add_trace(go.Scatter(x=wealth_plot.index, y=wealth_plot.values, mode="lines", name="Portefeuille", line=dict(color="#0A84FF"))) # Couleur primaire
     if bench_wealth is not None and not bench_wealth.empty:
         figw.add_trace(go.Scatter(
             x=bench_wealth.index, y=bench_wealth.values, mode="lines",
             name=f"Benchmark ({bench_ticker})", line=dict(color='gray', dash='dash')
         ))
-    figw.update_layout(template="plotly_white", yaxis_title="Valeur du portefeuille", xaxis_title="Date",
+    figw.update_layout(template="plotly_dark", yaxis_title="Valeur du portefeuille", xaxis_title="Date", # Template sombre
                     legend=dict(x=0.01, y=0.99))
     if log_scale:
         figw.update_yaxes(type="log")
@@ -1229,7 +1254,7 @@ elif tab_choice == "Backtest":
         ))
     figd.add_hline(y=0, line_width=1, line_dash="dash", line_color="gray")
     figd.update_layout(
-        template="plotly_white",
+        template="plotly_dark", # Template sombre
         yaxis_title="Drawdown",
         xaxis_title="Date",
         legend=dict(
@@ -1258,7 +1283,7 @@ elif tab_choice == "Backtest":
             hovertemplate=f"Date: %{{x|%Y-%m-%d}}<br>{ticker_alloc}: %{{y:.1%}}<extra></extra>"
         ))
     fig_alloc.update_layout(
-        template="plotly_white",
+        template="plotly_dark", # Template sombre
         yaxis_title="Allocation (%)",
         xaxis_title="Date",
         hovermode="x unified",
@@ -1291,7 +1316,7 @@ elif tab_choice == "Backtest":
             rolling_vol = ret_series.rolling(window=roll_window).std(ddof=1) * np.sqrt(k)
             fig_roll_vol = go.Figure()
             fig_roll_vol.add_trace(go.Scatter(x=rolling_vol.index, y=rolling_vol.values, mode="lines", name="Volatilité glissante", line=dict(color="tomato")))
-            fig_roll_vol.update_layout(template="plotly_white", yaxis_title="Volatilité Ann.", xaxis_title="Date")
+            fig_roll_vol.update_layout(template="plotly_dark", yaxis_title="Volatilité Ann.", xaxis_title="Date") # Template sombre
             fig_roll_vol.update_yaxes(tickformat=".0%")
             st_plotly_chart(fig_roll_vol)
         else:
@@ -1301,11 +1326,9 @@ elif tab_choice == "Backtest":
         if len(monthly_ret) > 1:
             fig_hist_ret = go.Figure()
             fig_hist_ret.add_trace(go.Histogram(x=monthly_ret, name="Rendements Mensuels", nbinsx=30, histnorm='probability density', marker_color='cornflowerblue'))
-            fig_hist_ret.update_layout(template="plotly_white", yaxis_title="Densité", xaxis_title="Rendement Mensuel", barmode="overlay")
+            fig_hist_ret.update_layout(template="plotly_dark", yaxis_title="Densité", xaxis_title="Rendement Mensuel", barmode="overlay") # Template sombre
             fig_hist_ret.update_traces(opacity=0.75)
             fig_hist_ret.update_xaxes(tickformat=".1%")
             st_plotly_chart(fig_hist_ret)
         else:
             st.info("Pas assez de données pour l'histogramme mensuel.")
-
-
