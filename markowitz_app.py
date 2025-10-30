@@ -715,7 +715,7 @@ if tab_choice == "Données":
     with col_left:
         rebase = st.checkbox("Rebase (base=100)", value=True, key="data_plot_rebase")
     with col_right:
-        log_scale_prices = st.checkbox("Échelle log", value=False, key="data_plot_log")
+        log_scale_prices = st.checkbox("Échelle log", value=True, key="data_plot_log")
 
     plot_df = prices.copy()
     if rebase:
@@ -1307,3 +1307,4 @@ elif tab_choice == "Backtest":
             st_plotly_chart(fig_hist_ret)
         else:
             st.info("Pas assez de données pour l'histogramme mensuel.")
+
