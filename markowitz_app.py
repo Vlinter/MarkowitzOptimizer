@@ -758,7 +758,7 @@ with tab_data:
             hovertemplate=f"%{{x|%Y-%m-%d}}<br>{'Index' if rebase else 'Prix'} {col}: %{{y:.2f}}<extra></extra>"
         ))
     fig_data.update_layout(
-        template="plotly_white",
+        template="plotly_dark",
         xaxis_title="Date",
         yaxis_title=("Index (base=100)" if rebase else "Prix"),
         legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
@@ -814,7 +814,7 @@ with tab_data:
             marker_color='cornflowerblue'
         ))
         fig_hist_ret.update_layout(
-            template="plotly_white", 
+            template="plotly_dark", 
             yaxis_title="Densité", 
             xaxis_title=f"Rendement ({freq})", 
             barmode="overlay"
@@ -902,7 +902,7 @@ with tab_charts:
         ))
     fig.update_layout(
         xaxis_title="Volatilité (ann.)", yaxis_title="Rendement (ann.)",
-        template="plotly_white", # Utilise le template sombre de plotly
+        template="plotly_dark", # Utilise le template sombre de plotly
         legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
         hovermode="closest"
     )
@@ -934,7 +934,7 @@ with tab_charts:
             fig_.add_trace(go.Pie(labels=s.index.tolist(), values=s.values.tolist(), hole=0.35,
                                  sort=False, textinfo="percent+label"), r, c)
     add_pie(pies, 1, 1, s_ms); add_pie(pies, 1, 2, s_mv); add_pie(pies, 1, 3, s_rp); add_pie(pies, 1, 4, s_mr)
-    pies.update_layout(template="plotly_white", showlegend=False) # Template sombre
+    pies.update_layout(template="plotly_dark", showlegend=False) # Template sombre
     st_plotly_chart(pies)
 
     st.subheader("Poids par portefeuille (%)")
@@ -968,7 +968,7 @@ with tab_corr:
         z=corr_ord.values, x=corr_ord.columns, y=corr_ord.index,
         colorscale="RdBu", zmin=-1, zmax=1, zmid=0, colorbar=dict(title="Corr")
     ))
-    heat.update_layout(template="plotly_white", height=600, xaxis_showgrid=False, yaxis_showgrid=False) # Template sombre
+    heat.update_layout(template="plotly_dark", height=600, xaxis_showgrid=False, yaxis_showgrid=False) # Template sombre
     st_plotly_chart(heat)
 
     top_pos, top_neg = top_corr_pairs(corr, k=3)
@@ -1021,7 +1021,7 @@ with tab_corr:
             hovertemplate=f"Date: %{{x|%Y-%m-%d}}<br>Corrélation: %{{y:.2f}}<extra></extra>"
         ))
         figc.update_layout(
-            template="plotly_white", # Template sombre
+            template="plotly_dark", # Template sombre
             yaxis_title="Coefficient de Corrélation", xaxis_title="Date",
             title=f"Corrélation Glissante ({win} Périodes) : {asset_a} vs. {asset_b}",
             yaxis_range=[-1, 1], legend=dict(x=0.01, y=0.99, xanchor="left", yanchor="top"),
@@ -1231,7 +1231,7 @@ with tab_backtest:
             x=bench_wealth.index, y=bench_wealth.values, mode="lines",
             name=f"Benchmark ({bench_ticker})", line=dict(color='gray', dash='dash')
         ))
-    figw.update_layout(template="plotly_white", yaxis_title="Valeur du portefeuille", xaxis_title="Date", # Template sombre
+    figw.update_layout(template="plotly_dark", yaxis_title="Valeur du portefeuille", xaxis_title="Date", # Template sombre
                     legend=dict(x=0.01, y=0.99))
     if log_scale:
         figw.update_yaxes(type="log")
@@ -1254,7 +1254,7 @@ with tab_backtest:
         ))
     figd.add_hline(y=0, line_width=1, line_dash="dash", line_color="gray")
     figd.update_layout(
-        template="plotly_white", # Template sombre
+        template="plotly_dark", # Template sombre
         yaxis_title="Drawdown",
         xaxis_title="Date",
         legend=dict(
@@ -1283,7 +1283,7 @@ with tab_backtest:
             hovertemplate=f"Date: %{{x|%Y-%m-%d}}<br>{ticker_alloc}: %{{y:.1%}}<extra></extra>"
         ))
     fig_alloc.update_layout(
-        template="plotly_white", # Template sombre
+        template="plotly_dark", # Template sombre
         yaxis_title="Allocation (%)",
         xaxis_title="Date",
         hovermode="x unified",
@@ -1316,7 +1316,7 @@ with tab_backtest:
             rolling_vol = ret_series.rolling(window=roll_window).std(ddof=1) * np.sqrt(k)
             fig_roll_vol = go.Figure()
             fig_roll_vol.add_trace(go.Scatter(x=rolling_vol.index, y=rolling_vol.values, mode="lines", name="Volatilité glissante", line=dict(color="tomato")))
-            fig_roll_vol.update_layout(template="plotly_white", yaxis_title="Volatilité Ann.", xaxis_title="Date") # Template sombre
+            fig_roll_vol.update_layout(template="plotly_dark", yaxis_title="Volatilité Ann.", xaxis_title="Date") # Template sombre
             fig_roll_vol.update_yaxes(tickformat=".0%")
             st_plotly_chart(fig_roll_vol)
         else:
@@ -1326,10 +1326,11 @@ with tab_backtest:
         if len(monthly_ret) > 1:
             fig_hist_ret = go.Figure()
             fig_hist_ret.add_trace(go.Histogram(x=monthly_ret, name="Rendements Mensuels", nbinsx=30, histnorm='probability density', marker_color='cornflowerblue'))
-            fig_hist_ret.update_layout(template="plotly_white", yaxis_title="Densité", xaxis_title="Rendement Mensuel", barmode="overlay") # Template sombre
+            fig_hist_ret.update_layout(template="plotly_dark", yaxis_title="Densité", xaxis_title="Rendement Mensuel", barmode="overlay") # Template sombre
             fig_hist_ret.update_traces(opacity=0.75)
             fig_hist_ret.update_xaxes(tickformat=".1%")
             st_plotly_chart(fig_hist_ret)
         else:
             st.info("Pas assez de données pour l'histogramme mensuel.")
+
 
