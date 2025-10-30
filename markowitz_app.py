@@ -1196,7 +1196,7 @@ elif tab_choice == "Backtest":
     st.subheader("Courbes de backtest")
 
     # 1) Wealth (on top)
-    log_scale = st.checkbox("Échelle log (Wealth)", value=False, key="wealth_log_checkbox")
+    log_scale = st.checkbox("Échelle log (Wealth)", value=True, key="wealth_log_checkbox")
     wealth_plot = wealth.where(wealth > 0, np.nan) if log_scale else wealth
 
     figw = go.Figure()
@@ -1307,4 +1307,5 @@ elif tab_choice == "Backtest":
             st_plotly_chart(fig_hist_ret)
         else:
             st.info("Pas assez de données pour l'histogramme mensuel.")
+
 
