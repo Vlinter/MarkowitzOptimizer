@@ -1,14 +1,14 @@
 [theme]
-# Un bleu vif mais pas "fluo", excellent sur le gris
-primaryColor="#0A84FF" 
+# Un bleu clair et doux qui s'accorde bien avec l'ardoise
+primaryColor="#55B0F7"
 
-# Un gris foncé neutre, pas un noir absolu
-backgroundColor="#222222"
+# Le fond principal : un bleu-gris très foncé
+backgroundColor="#1C202C"
 
-# Une couleur légèrement plus claire pour les conteneurs et la sidebar
-secondaryBackgroundColor="#333333"
+# La sidebar et les conteneurs : un ton légèrement plus clair
+secondaryBackgroundColor="#2A3140"
 
-# Un blanc légèrement cassé pour réduire le contraste
-textColor="#E0E0E0"
+# Texte blanc pur, qui s'accorde bien avec ce fond
+textColor="#FAFAFA"
 
 font="sans serif"
