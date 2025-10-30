@@ -5,6 +5,9 @@
 # - Drawdown du benchmark superposé au graphe des DD
 # - Corrections précédentes conservées (fetch_benchmark_prices .name, etc.)
 # - python -m streamlit run markowitz_app.py
+#
+# MODIFIÉ : Remplacement de st.tabs par st.radio + st.session_state
+# pour conserver l'onglet actif lors des reruns.
 # =========================================================
 import warnings
 warnings.filterwarnings(
@@ -363,9 +366,9 @@ def find_drawdowns(wealth: pd.Series, top_n: int = 5) -> pd.DataFrame:
 
 def n_for_rebalance_choice(choice: str, data_freq: str, n_custom: int) -> int:
     if choice == "Auto (fréquence des données)": return 1
-    if choice == "Mensuel":    return months_to_periods(1, data_freq)
+    if choice == "Mensuel":   return months_to_periods(1, data_freq)
     if choice == "Trimestriel": return months_to_periods(3, data_freq)
-    if choice == "Annuel":     return months_to_periods(12, data_freq)
+    if choice == "Annuel":      return months_to_periods(12, data_freq)
     if choice == "Tous les N périodes": return max(1, int(n_custom))
     return 1
 
@@ -395,7 +398,7 @@ def build_availability_from_union(prices_union: pd.DataFrame) -> pd.DataFrame:
         s = prices_union[col]
         first = s.first_valid_index(); last  = s.last_valid_index()
         rows.append({"Ticker": str(col).upper(), "First": pd.to_datetime(first) if first is not None else pd.NaT,
-                                               "Last":  pd.to_datetime(last)  if last  is not None else pd.NaT})
+                                                "Last":  pd.to_datetime(last)  if last  is not None else pd.NaT})
     df = pd.DataFrame(rows)
     return df.sort_values("First") if not df.empty else df
 
@@ -493,7 +496,7 @@ with st.container(border=True):
     data_src = st.radio(
         "Choisir une source :",
         ["Fichier Excel", "Yahoo Finance"],
-        index=1,                               # ← par défaut : Yahoo
+        index=1,                          # ← par défaut : Yahoo
         horizontal=True,
         label_visibility="collapsed",
         key="data_src_radio"
@@ -510,7 +513,7 @@ with st.container(border=True):
             availability = build_availability_from_union(prices_union)
             prices_all = prices_union.dropna(how="any")
             if not prices_all.empty:
-                 yf_interval = {"daily": "1d", "weekly": "1wk", "monthly": "1mo"}.get(infer_frequency(prices_all.index), "1d")
+                yf_interval = {"daily": "1d", "weekly": "1wk", "monthly": "1mo"}.get(infer_frequency(prices_all.index), "1d")
 
     else:
         if not HAS_YF:
@@ -562,10 +565,10 @@ if "excluded" not in st.session_state:
 if availability is not None and not availability.empty:
     availability["Ticker"] = availability["Ticker"].astype(str).str.upper()
     start_def = pd.to_datetime(availability["First"]).max().date()
-    end_def   = pd.to_datetime(availability["Last"]).min().date()
+    end_def    = pd.to_datetime(availability["Last"]).min().date()
 else:
     start_def = prices_all.index.min().date()
-    end_def   = prices_all.index.max().date()
+    end_def    = prices_all.index.max().date()
 
 with st.container(border=True):
     st.markdown("#### 2. Paramètres de l'analyse")
@@ -698,22 +701,25 @@ st.divider()
 st.markdown("#### 3. Analyse")
 
 # ====================================================================
-# ========== SECTION DE NAVIGATION (REMPLACEMENT) ==========
+# ========== SECTION DE NAVIGATION (AVEC ÉTAT) ==========
 # ====================================================================
-# On remplace le st.radio par st.tabs pour un look plus moderne
-# qui s'intègre parfaitement à la structure de ton code.
 
-tab_data, tab_opti, tab_charts, tab_corr, tab_backtest = st.tabs([
-    "📊 Données", 
-    "⚙️ Optimisation", 
-    "📈 Graphiques", 
-    "🔗 Corrélation", 
-    "⏱️ Backtest"
-])
+# Initialiser l'onglet actif dans st.session_state s'il n'existe pas
+if "active_tab" not in st.session_state:
+    st.session_state.active_tab = "📊 Données" # L'onglet par défaut
+
+# Utiliser st.radio pour la navigation, qui persiste son état via le 'key'
+selected_tab = st.radio(
+    "Navigation principale",
+    ["📊 Données", "⚙️ Optimisation", "📈 Graphiques", "🔗 Corrélation", "⏱️ Backtest"],
+    key="active_tab", # Clé pour st.session_state
+    horizontal=True,
+    label_visibility="collapsed"
+)
 
 
 # ============================ Onglet Données ============================
-with tab_data:
+if selected_tab == "📊 Données":
     st.subheader("Tableau de prix utilisé (après filtre de dates et exclusions)")
     st.dataframe(prices, width='stretch')
     if availability is not None and not availability.empty:
@@ -824,7 +830,7 @@ with tab_data:
         st_plotly_chart(fig_hist_ret)
 
 # ============================ Onglet Optimisation ============================
-with tab_opti:
+elif selected_tab == "⚙️ Optimisation":
     vol = np.sqrt(np.diag(cov)); shp = np.where(vol > 0, (mu)/vol, np.nan)
     st.subheader("Rendements, volatilités et Sharpe (annualisés)")
     df_metrics = pd.DataFrame({"Return_ann": mu, "Vol_ann": vol, "Sharpe_ann": shp}, index=tickers)
@@ -871,7 +877,7 @@ with tab_opti:
     st.dataframe((df_rc*100).round(2).astype(str) + " %", width='stretch')
 
 # ============================ Onglet Graphiques ============================
-with tab_charts:
+elif selected_tab == "📈 Graphiques":
     n = len(tickers)
     st.subheader("Nuage de portefeuilles, frontière efficiente (bornée) et portefeuilles optimaux")
     fig = go.Figure()
@@ -929,10 +935,10 @@ with tab_charts:
     def add_pie(fig_, r, c, s: pd.Series):
         if len(s) == 1:
             fig_.add_trace(go.Pie(labels=[s.index[0]], values=[1.0], hole=0.35,
-                                 sort=False, textinfo="label+percent", textposition="inside", showlegend=False), r, c)
+                                  sort=False, textinfo="label+percent", textposition="inside", showlegend=False), r, c)
         else:
             fig_.add_trace(go.Pie(labels=s.index.tolist(), values=s.values.tolist(), hole=0.35,
-                                 sort=False, textinfo="percent+label"), r, c)
+                                  sort=False, textinfo="percent+label"), r, c)
     add_pie(pies, 1, 1, s_ms); add_pie(pies, 1, 2, s_mv); add_pie(pies, 1, 3, s_rp); add_pie(pies, 1, 4, s_mr)
     pies.update_layout(template="plotly_dark", showlegend=False) # Template sombre
     st_plotly_chart(pies)
@@ -947,7 +953,7 @@ with tab_charts:
     st.dataframe((weights_df * 100).round(2).astype(str) + " %", width='stretch')
 
 # ============================ Onglet Corrélation ============================
-with tab_corr:
+elif selected_tab == "🔗 Corrélation":
     st.subheader("Paramètres de corrélation")
     c1, c2, c3 = st.columns(3)
     with c1:
@@ -1032,13 +1038,13 @@ with tab_corr:
         st.info("Sélectionnez deux actifs distincts.")
 
 # ============================ Onglet Backtest ============================
-with tab_backtest:
+elif selected_tab == "⏱️ Backtest":
     st.subheader("Configuration du Backtest")
     n = len(tickers)
     cfg1, cfg2 = st.columns(2)
     with cfg1:
         src = st.radio("Source des poids", ["Manuel", "Égal-pondéré", "Risk Parity", "Max Sharpe", "Min Variance", "Max Return"],
-                       horizontal=True, index=3, key="bt_src_radio")
+                           horizontal=True, index=3, key="bt_src_radio")
     with cfg2:
         mode = st.radio("Mode de backtest", ["Buy & Hold (sans rebalancement)", "Rebalancement"], horizontal=True, index=1, key="bt_mode_radio")
 
@@ -1107,7 +1113,7 @@ with tab_backtest:
             reb_choice = st.selectbox(
                 "Fréquence de rebalancement",
                 reb_opts,
-                index=default_index,                # ← preselect best Sharpe
+                index=default_index,           # ← preselect best Sharpe
                 key="reb_freq_select"
             )
             st.caption(f"Par défaut : **{best_opt}** (Sharpe max).")
@@ -1126,7 +1132,7 @@ with tab_backtest:
 
     # Wealth, metrics, DD
     wealth, weights_history = (wealth_buy_hold(returns, w_user) if mode.startswith("Buy") 
-                               else wealth_rebalanced_every_n(returns, w_user, n_reb=n_reb))
+                             else wealth_rebalanced_every_n(returns, w_user, n_reb=n_reb))
     metrics, dd = perf_metrics(wealth, freq_k=k)
     ret_series = wealth.pct_change().dropna()
 
@@ -1187,7 +1193,7 @@ with tab_backtest:
                     bench_returns_common = bench_returns_common.squeeze("columns")
 
                 if (port_returns_common is not None) and (bench_returns_common is not None) \
-                   and (not port_returns_common.empty) and (not bench_returns_common.empty):
+                  and (not port_returns_common.empty) and (not bench_returns_common.empty):
                     bench_returns = bench_returns_common
 
                     st.markdown("**Métriques relatives**")
@@ -1212,7 +1218,7 @@ with tab_backtest:
     pv_df = pd.DataFrame({
         "Moyenne Arithm. (ann)": [f"{((1+monthly_ret.mean())**12 - 1)*100:.2f}%"] if len(monthly_ret)>0 else ["N/A"],
         "Moyenne Géo. (ann)":  [f"{(((1+monthly_ret).prod())**(12/len(monthly_ret)) - 1)*100:.2f}%"] if len(monthly_ret)>0 else ["N/A"],
-        "Std (ann)":             [f"{monthly_ret.std(ddof=1)*np.sqrt(12)*100:.2f}%"] if len(monthly_ret)>0 else ["N/A"],
+        "Std (ann)":               [f"{monthly_ret.std(ddof=1)*np.sqrt(12)*100:.2f}%"] if len(monthly_ret)>0 else ["N/A"],
         "Skewness": [f"{monthly_ret.skew():.2f}"] if len(monthly_ret)>0 else ["N/A"],
         "Kurtosis (Excess)": [f"{monthly_ret.kurtosis():.2f}"] if len(monthly_ret)>0 else ["N/A"],
     })
@@ -1232,7 +1238,7 @@ with tab_backtest:
             name=f"Benchmark ({bench_ticker})", line=dict(color='gray', dash='dash')
         ))
     figw.update_layout(template="plotly_dark", yaxis_title="Valeur du portefeuille", xaxis_title="Date", # Template sombre
-                    legend=dict(x=0.01, y=0.99))
+                       legend=dict(x=0.01, y=0.99))
     if log_scale:
         figw.update_yaxes(type="log")
     st_plotly_chart(figw)
@@ -1332,5 +1338,3 @@ with tab_backtest:
             st_plotly_chart(fig_hist_ret)
         else:
             st.info("Pas assez de données pour l'histogramme mensuel.")
-
-
