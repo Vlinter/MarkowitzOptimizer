@@ -1,15 +1,15 @@
 [theme]
-# Couleur primaire pour les widgets (boutons, sliders, etc.)
-primaryColor="#0068C9"  # Un bleu "finance"
+# Couleur primaire (bleu vif pour les widgets)
+primaryColor="#0A84FF"
 
-# Couleur de fond principale de l'application
-backgroundColor="#F0F2F6"  # Un gris très clair, plus doux que le blanc
+# Fond principal (sombre)
+backgroundColor="#0E1117"
 
-# Couleur de fond pour la sidebar et les éléments secondaires
-secondaryBackgroundColor="#FFFFFF" # Garder la sidebar blanche pour le contraste
+# Fond secondaire (pour la sidebar, les expanders, les conteneurs)
+secondaryBackgroundColor="#1C202C"
 
 # Couleur du texte
-textColor="#262730"
+textColor="#FAFAFA"
 
-# Police (optionnel)
-# font="sans serif"
+# Police (optionnel, mais "sans serif" est plus propre)
+font="sans serif"
