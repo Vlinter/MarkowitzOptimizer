@@ -1,6 +1,6 @@
 [theme]
-# Couleur primaire (bleu vif pour les widgets)
-primaryColor="#0A84FF"
+# Couleur primaire
+primaryColor="#55B0F7"
 
 # Fond principal (sombre)
 backgroundColor="#0E1117"
@@ -13,3 +13,4 @@ textColor="#FAFAFA"
 
 # Police (optionnel, mais "sans serif" est plus propre)
 font="sans serif"
+
