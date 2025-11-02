@@ -55,7 +55,6 @@ def fetch_yahoo_prices(
         
     if isinstance(df.columns, pd.MultiIndex):
         # Cas 1: MultiIndex (plusieurs tickers)
-        # Sélectionner (Ticker, 'Close') et renommer la colonne en Ticker
         prices_union = pd.concat([
             df[(t, 'Close')].rename(t) for t in tickers_up if (t, 'Close') in df.columns
         ], axis=1)
@@ -64,16 +63,12 @@ def fetch_yahoo_prices(
         prices_union = df[['Close']].rename(columns={'Close': tickers_up[0]})
     else:
         # Cas 3: Index simple (plusieurs tickers, mais pas de group_by, ex: erreur)
-        # Tente de trouver les tickers directement
         prices_union = df[[t for t in tickers_up if t in df.columns]]
 
     if prices_union.empty:
         return pd.DataFrame(), pd.DataFrame()
 
-    # Utiliser la fonction de utils.py pour l'analyse de disponibilité
     availability_df = build_availability_from_union(prices_union)
-    
-    # L'intersection est simplement les lignes sans aucun NaN
     prices_intersection = prices_union.dropna(how="any").sort_index()
     
     return prices_intersection, availability_df
@@ -123,11 +118,14 @@ def fetch_risk_free_rate(ticker: str, start_date, end_date) -> pd.Series:
     
     # --- [CORRECTION] ---
     if isinstance(rf_series, pd.DataFrame):
-        st.warning(f"Le ticker {ticker} a renvoyé un DataFrame pour 'Close'. Utilisation de la première colonne.")
-        rf_series = rf_series.iloc[:, 0]
+        # [MODIFIÉ] Avertissement commenté pour ne plus l'afficher
+        # st.warning(f"Le ticker {ticker} a renvoyé un DataFrame pour 'Close'. Utilisation de la première colonne.")
+        rf_series = rf_series.iloc[:, 0] # La logique de correction est conservée
     # --- [FIN CORRECTION] ---
 
+    # Les taux de YFinance sont en % (ex: 5.25), on convertit en décimal
     rf_series = rf_series / 100.0
     rf_series.name = "RF_ANNUAL"
     
+    # ffill() pour combler les week-ends/jours fériés où le taux ne change pas
     return rf_series.ffill().dropna()
